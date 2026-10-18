@@ -1,0 +1,31 @@
+1
+00:00:00,000 --> 00:00:02,500
+Xin chào mọi người, hôm nay chúng ta sẽ cùng tìm hiểu về trí tuệ nhân tạo.
+
+2
+00:00:02,500 --> 00:00:05,000
+AI đang thay đổi rất nhiều cách thức chúng ta làm việc và sinh hoạt.
+
+3
+00:00:05,000 --> 00:00:08,000
+Trong phần mở đầu này, tôi sẽ giới thiệu những khái niệm cơ bản nhất.
+
+4
+00:00:10,500 --> 00:00:13,500
+Trước tiên, hãy cùng nhìn lại lịch sử phát triển của ngành công nghệ này.
+
+5
+00:00:13,500 --> 00:00:17,000
+Từ những hệ thống dựa trên luật đầu tiên, đến các mô hình học sâu hiện đại.
+
+6
+00:00:20,500 --> 00:00:24,000
+Giờ chúng ta chuyển sang phần ứng dụng thực tế của AI trong doanh nghiệp.
+
+7
+00:00:24,000 --> 00:00:27,500
+Nhiều công ty đã sử dụng AI để tự động hóa các quy trình vận hành.
+
+8
+00:00:27,500 --> 00:00:31,000
+Cuối cùng, tôi sẽ tóm tắt lại toàn bộ nội dung và trả lời các câu hỏi.

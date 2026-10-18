@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-serializer"
+version = "1.0.0"
+description = "Turn one long video and its transcript (SRT/VTT) into a series of topic-based clip episodes."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [{ name = "video-serializer" }]
+keywords = ["video", "split", "transcript", "srt", "vtt", "ffmpeg", "series"]
+dependencies = []
+
+[project.optional-dependencies]
+# Better (semantic) topic segmentation via multilingual embeddings.
+semantic = ["sentence-transformers>=2.2.0"]
+
+[project.scripts]
+video-serializer = "video_serializer.cli:main"
+
+[tool.setuptools]
+packages = ["video_serializer"]

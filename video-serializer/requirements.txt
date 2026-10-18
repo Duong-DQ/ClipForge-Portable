@@ -1,0 +1,30 @@
+# video-serializer
+# ----------------
+# The core pipeline has NO hard Python dependencies.
+# It only needs:
+#   * Python 3.8+ (standard library)
+#   * ffmpeg available on PATH (any recent build; tested on ffmpeg 9.x)
+#
+#
+# OPTIONAL — semantic (embedding-based) topic segmentation
+# --------------------------------------------------------
+# For noticeably better topic boundaries, install a multilingual
+# sentence-embedding model. When this package is importable, the tool
+# automatically switches to semantic segmentation (no flag needed).
+#
+#   pip install sentence-transformers
+#
+# The default model is `paraphrase-multilingual-MiniLM-L12-v2` (covers
+# Vietnamese / Chinese / English). Override it with --embedding-model if you
+# have a different model you prefer.
+#
+#
+# OPTIONAL — LLM titles & summaries
+# ---------------------------------
+# No extra dependency is required. If you enable `--llm`, the tool calls any
+# OpenAI-compatible chat endpoint using only the Python standard library
+# (urllib). Set the endpoint via --llm-base-url / --llm-api-key / --llm-model
+# or the LLM_BASE_URL / LLM_API_KEY / LLM_MODEL environment variables.
+
+# Uncomment the line below to enable semantic segmentation:
+# sentence-transformers>=2.2.0

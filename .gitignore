@@ -1,11 +1,15 @@
 # Local tooling
 .codegraph/
+.omo/
 
 # Python
 __pycache__/
 *.pyc
 venv/
 .venv/
+dist/
+build/
+*.egg-info/
 
 # OS
 .DS_Store

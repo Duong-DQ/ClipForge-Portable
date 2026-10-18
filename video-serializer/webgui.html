@@ -1,0 +1,1213 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Serializer</title>
+    <style>
+        :root {
+            --bg-primary: #0f172a;
+            --bg-secondary: #1e293b;
+            --bg-card: #334155;
+            --bg-hover: #475569;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent: #3b82f6;
+            --accent-hover: #2563eb;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+            --border: #475569;
+            --shadow: rgba(0, 0, 0, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* Header */
+        header {
+            text-align: center;
+            padding: 40px 0 30px;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 30px;
+        }
+
+        header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, var(--accent), #8b5cf6);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 8px;
+        }
+
+        header p {
+            color: var(--text-secondary);
+            font-size: 1.1rem;
+        }
+
+        /* Status Bar */
+        .status-bar {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 12px 16px;
+            margin-bottom: 24px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .status-left {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 0.9rem;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--success);
+        }
+
+        .status-dot.warning {
+            background: var(--warning);
+        }
+
+        .status-dot.error {
+            background: var(--error);
+        }
+
+        .warning-badge {
+            background: rgba(245, 158, 11, 0.2);
+            color: var(--warning);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .log-area {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            max-width: 500px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .card-title {
+            font-size: 1.25rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            color: var(--text-primary);
+        }
+
+        /* Upload Zones */
+        .upload-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        @media (max-width: 768px) {
+            .upload-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .upload-zone {
+            background: var(--bg-card);
+            border: 2px dashed var(--border);
+            border-radius: 12px;
+            padding: 40px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+        }
+
+        .upload-zone:hover {
+            border-color: var(--accent);
+            background: var(--bg-hover);
+        }
+
+        .upload-zone.dragover {
+            border-color: var(--accent);
+            background: rgba(59, 130, 246, 0.1);
+        }
+
+        .upload-zone.has-file {
+            border-style: solid;
+            border-color: var(--success);
+        }
+
+        .upload-icon {
+            font-size: 3rem;
+            margin-bottom: 12px;
+        }
+
+        .upload-zone h3 {
+            font-size: 1.1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .upload-zone p {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+        }
+
+        .upload-zone input[type="file"] {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        .file-info {
+            margin-top: 16px;
+            padding: 12px;
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            font-size: 0.9rem;
+            display: none;
+        }
+
+        .file-info.visible {
+            display: block;
+        }
+
+        .file-info strong {
+            color: var(--success);
+        }
+
+        .path-input-container {
+            margin-top: 16px;
+        }
+
+        .path-input-container label {
+            display: block;
+            font-size: 0.9rem;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .path-input-container input {
+            width: 100%;
+            padding: 10px 14px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .path-input-container input:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            margin-top: 12px;
+            display: none;
+        }
+
+        .progress-container.visible {
+            display: block;
+        }
+
+        .progress-bar {
+            height: 6px;
+            background: var(--bg-secondary);
+            border-radius: 3px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent), #8b5cf6);
+            width: 0%;
+            transition: width 0.2s ease;
+        }
+
+        .progress-text {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        /* Options Panel */
+        .options-panel {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .option-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .option-group label {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 6px;
+        }
+
+        .option-group input,
+        .option-group select {
+            padding: 10px 12px;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-primary);
+            font-size: 0.9rem;
+        }
+
+        .option-group input:focus,
+        .option-group select:focus {
+            outline: none;
+            border-color: var(--accent);
+        }
+
+        /* Buttons */
+        .button-row {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 24px;
+        }
+
+        .btn {
+            padding: 12px 28px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #2563eb);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: linear-gradient(135deg, var(--accent-hover), #1d4ed8);
+            transform: translateY(-1px);
+        }
+
+        .btn-secondary {
+            background: var(--bg-card);
+            color: var(--text-primary);
+            border: 1px solid var(--border);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: var(--bg-hover);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .spinner {
+            width: 18px;
+            height: 18px;
+            border: 2px solid rgba(255,255,255,0.3);
+            border-top-color: white;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Error Banner */
+        .error-banner {
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid var(--error);
+            border-radius: 8px;
+            padding: 14px 18px;
+            margin-bottom: 24px;
+            display: none;
+        }
+
+        .error-banner.visible {
+            display: block;
+        }
+
+        .error-banner strong {
+            color: var(--error);
+            margin-right: 8px;
+        }
+
+        /* Script Timeline */
+        .script-section {
+            margin-bottom: 32px;
+        }
+
+        .topic-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .topic-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .topic-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+
+        .topic-meta {
+            display: flex;
+            gap: 16px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .topic-meta span {
+            background: var(--bg-secondary);
+            padding: 4px 10px;
+            border-radius: 4px;
+        }
+
+        .topic-summary {
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            margin-bottom: 16px;
+            line-height: 1.5;
+        }
+
+        .transcript-lines {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 16px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .transcript-line {
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+            padding: 8px 0;
+            border-bottom: 1px solid var(--border);
+            line-height: 1.6;
+        }
+
+        .transcript-line:last-child {
+            border-bottom: none;
+        }
+
+        .timestamp {
+            color: var(--accent);
+            font-weight: 600;
+            margin-right: 12px;
+        }
+
+        /* Clips Grid */
+        .clips-section {
+            margin-bottom: 32px;
+        }
+
+        .clips-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+
+        .output-dir {
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+        }
+
+        .output-dir code {
+            background: var(--bg-card);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-family: 'Consolas', 'Monaco', monospace;
+            cursor: pointer;
+        }
+
+        .output-dir code:hover {
+            background: var(--bg-hover);
+        }
+
+        .metadata-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .metadata-link:hover {
+            text-decoration: underline;
+        }
+
+        .clips-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 20px;
+        }
+
+        @media (max-width: 400px) {
+            .clips-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .clip-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+
+        .clip-video {
+            width: 100%;
+            aspect-ratio: 16/9;
+            background: #000;
+        }
+
+        .clip-video video {
+            width: 100%;
+            height: 100%;
+        }
+
+        .clip-info {
+            padding: 16px;
+        }
+
+        .clip-title {
+            font-size: 1rem;
+            font-weight: 600;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .clip-meta {
+            display: flex;
+            gap: 12px;
+            font-size: 0.85rem;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
+        }
+
+        .clip-summary {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            line-height: 1.5;
+        }
+
+        .clip-download {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            color: var(--accent);
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            padding: 8px 14px;
+            background: var(--bg-secondary);
+            border-radius: 6px;
+            transition: background 0.2s;
+        }
+
+        .clip-download:hover {
+            background: var(--bg-hover);
+        }
+
+        /* Empty State */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-muted);
+        }
+
+        .empty-state-icon {
+            font-size: 4rem;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+
+        .empty-state h3 {
+            font-size: 1.2rem;
+            margin-bottom: 8px;
+            color: var(--text-secondary);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Video Serializer</h1>
+            <p>Kéo thả video & transcript để xem kịch bản và tách thành các tập ngắn</p>
+        </header>
+
+        <!-- Status Bar -->
+        <div class="status-bar">
+            <div class="status-left">
+                <div class="status-indicator">
+                    <span class="status-dot" id="statusDot"></span>
+                    <span id="statusText">Đang kết nối...</span>
+                </div>
+                <span class="warning-badge" id="ffmpegWarning" style="display: none;">⚠️ Thiếu ffmpeg</span>
+            </div>
+            <div class="log-area" id="logArea">Sẵn sàng</div>
+        </div>
+
+        <!-- Error Banner -->
+        <div class="error-banner" id="errorBanner">
+            <strong>Lỗi:</strong>
+            <span id="errorMessage"></span>
+        </div>
+
+        <!-- Upload Zones -->
+        <div class="upload-grid">
+            <!-- Video Upload Zone -->
+            <div class="upload-zone" id="videoZone">
+                <input type="file" id="videoInput" accept="video/*">
+                <div class="upload-icon">🎬</div>
+                <h3>Video</h3>
+                <p>Kéo thả hoặc click để chọn file video</p>
+                <div class="file-info" id="videoInfo"></div>
+                <div class="progress-container" id="videoProgress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="videoProgressFill"></div>
+                    </div>
+                    <div class="progress-text" id="videoProgressText">0%</div>
+                </div>
+            </div>
+            <div class="path-input-container" style="grid-column: 1 / -1;">
+                <label for="videoPathInput">hoặc nhập đường dẫn video (tùy chọn)</label>
+                <input type="text" id="videoPathInput" placeholder="Ví dụ: C:\Videos\myvideo.mp4">
+            </div>
+
+            <!-- Transcript Upload Zone -->
+            <div class="upload-zone" id="transcriptZone">
+                <input type="file" id="transcriptInput" accept=".srt,.vtt">
+                <div class="upload-icon">📄</div>
+                <h3>Transcript (.srt / .vtt)</h3>
+                <p>Kéo thả hoặc click để chọn file transcript</p>
+                <div class="file-info" id="transcriptInfo"></div>
+            </div>
+        </div>
+
+        <!-- Options Panel -->
+        <div class="card">
+            <h2 class="card-title">Tùy chọn xử lý</h2>
+            <div class="options-panel">
+                <div class="option-group">
+                    <label for="minDuration">Thời lượng tối thiểu (giây)</label>
+                    <input type="number" id="minDuration" value="20" min="1">
+                </div>
+                <div class="option-group">
+                    <label for="maxDuration">Thời lượng tối đa (giây)</label>
+                    <input type="number" id="maxDuration" value="300" min="1">
+                </div>
+                <div class="option-group">
+                    <label for="gapThreshold">Khoảng nghỉ (giây)</label>
+                    <input type="number" id="gapThreshold" value="1.5" step="0.1" min="0">
+                </div>
+                <div class="option-group">
+                    <label for="similarity">Ngưỡng giống nhau (0-1)</label>
+                    <input type="number" id="similarity" value="0.45" step="0.05" min="0" max="1">
+                </div>
+                <div class="option-group">
+                    <label for="cutMode">Chế độ cắt</label>
+                    <select id="cutMode">
+                        <option value="accurate">Chính xác (encode lại)</option>
+                        <option value="fast">Nhanh (copy)</option>
+                    </select>
+                </div>
+                <div class="option-group">
+                    <label for="useEmbeddings">Sử dụng embeddings</label>
+                    <select id="useEmbeddings">
+                        <option value="auto">Tự động (auto)</option>
+                        <option value="false">Heuristic (nhanh, không cần cài thêm)</option>
+                        <option value="true">Semantic (cần cài sentence-transformers)</option>
+                    </select>
+                </div>
+                <div class="option-group">
+                    <label style="font-weight: 600; color: var(--text-primary); margin-bottom: 10px;">Nhắc lại tập trước</label>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                        <input type="checkbox" id="optAddRecaps" style="width: auto;">
+                        <label for="optAddRecaps" style="margin: 0; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer;">Thêm phần nhắc lại tập trước ở đầu mỗi clip (từ clip 2)</label>
+                    </div>
+                    <label for="optRecapDuration" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Thời lượng intro (giây)</label>
+                    <input type="number" id="optRecapDuration" value="4" min="1" max="10" step="0.5" style="margin-bottom: 10px;">
+                    <label for="optRecapLang" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Ngôn ngữ bảng nhắc lại</label>
+                    <select id="optRecapLang" style="margin-bottom: 10px;">
+                        <option value="auto" selected>Tự động (theo transcript)</option>
+                        <option value="vi">Tiếng Việt</option>
+                        <option value="en">English</option>
+                        <option value="zh">中文</option>
+                    </select>
+                    <label for="optRecapVoice" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Giọng đọc (TTS)</label>
+                    <input type="text" id="optRecapVoice" value="" placeholder="để trống = tự theo ngôn ngữ">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Giọng đọc tự tắt (chỉ còn bảng chữ) nếu không có mạng hoặc không cài được TTS.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="button-row">
+            <button class="btn btn-secondary" id="parseBtn">
+                🔍 Phân tích transcript
+            </button>
+            <button class="btn btn-primary" id="processBtn" disabled>
+                ✂️ Tách video
+            </button>
+        </div>
+
+        <!-- Results Area -->
+        <div id="resultsArea">
+            <!-- Script/Timeline Section -->
+            <div class="script-section" id="scriptSection" style="display: none;">
+                <h2 class="card-title">Kịch bản video</h2>
+                <div id="topicsContainer"></div>
+            </div>
+
+            <!-- Clips Section -->
+            <div class="clips-section" id="clipsSection" style="display: none;">
+                <div class="clips-header">
+                    <div>
+                        <h2 class="card-title" style="margin-bottom: 8px;">Các tập đã tách</h2>
+                        <div class="output-dir">
+                            Thư mục output: <code id="outputDirCode"></code>
+                        </div>
+                    </div>
+                    <div style="display: flex; gap: 12px; align-items: center;">
+                        <a href="/metadata.json" class="metadata-link" download>
+                            📥 Tải metadata.json
+                        </a>
+                        <a href="/api/export" class="metadata-link" id="exportAllBtn"
+                           style="background: linear-gradient(135deg, #22c55e, #16a34a); color: #fff; padding: 8px 16px; border-radius: 8px; text-decoration: none; font-weight: 600;">
+                            📦 Xuất file (tải tất cả .ZIP)
+                        </a>
+                    </div>
+                </div>
+                <div class="clips-grid" id="clipsGrid"></div>
+            </div>
+
+            <!-- Empty State -->
+            <div class="empty-state" id="emptyState">
+                <div class="empty-state-icon">🎯</div>
+                <h3>Chưa có dữ liệu</h3>
+                <p>Upload video và transcript, sau đó nhấn "Phân tích transcript" để xem trước</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let videoPath = '';
+        let transcriptPath = '';
+        let parsedData = null;
+
+        // DOM Elements
+        const statusDot = document.getElementById('statusDot');
+        const statusText = document.getElementById('statusText');
+        const ffmpegWarning = document.getElementById('ffmpegWarning');
+        const logArea = document.getElementById('logArea');
+        const errorBanner = document.getElementById('errorBanner');
+        const errorMessage = document.getElementById('errorMessage');
+        const videoZone = document.getElementById('videoZone');
+        const videoInput = document.getElementById('videoInput');
+        const videoInfo = document.getElementById('videoInfo');
+        const videoProgress = document.getElementById('videoProgress');
+        const videoProgressFill = document.getElementById('videoProgressFill');
+        const videoProgressText = document.getElementById('videoProgressText');
+        const videoPathInput = document.getElementById('videoPathInput');
+        const transcriptZone = document.getElementById('transcriptZone');
+        const transcriptInput = document.getElementById('transcriptInput');
+        const transcriptInfo = document.getElementById('transcriptInfo');
+        const parseBtn = document.getElementById('parseBtn');
+        const processBtn = document.getElementById('processBtn');
+        const scriptSection = document.getElementById('scriptSection');
+        const topicsContainer = document.getElementById('topicsContainer');
+        const clipsSection = document.getElementById('clipsSection');
+        const clipsGrid = document.getElementById('clipsGrid');
+        const outputDirCode = document.getElementById('outputDirCode');
+        const emptyState = document.getElementById('emptyState');
+
+        // Utility Functions
+        function log(message) {
+            logArea.textContent = message;
+        }
+
+        function showError(message) {
+            errorMessage.textContent = message;
+            errorBanner.classList.add('visible');
+            setTimeout(() => {
+                errorBanner.classList.remove('visible');
+            }, 8000);
+        }
+
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024;
+            const sizes = ['B', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+
+        function getOptions() {
+            return {
+                min_duration: parseFloat(document.getElementById('minDuration').value) || 20,
+                max_duration: parseFloat(document.getElementById('maxDuration').value) || 300,
+                gap: parseFloat(document.getElementById('gapThreshold').value) || 1.5,
+                similarity: parseFloat(document.getElementById('similarity').value) || 0.45,
+                cut_mode: document.getElementById('cutMode').value,
+                use_embeddings: document.getElementById('useEmbeddings').value,
+                add_recaps: document.getElementById('optAddRecaps').checked ? 'true' : 'false',
+                recap_duration: parseFloat(document.getElementById('optRecapDuration').value) || 4,
+                recap_lang: document.getElementById('optRecapLang').value,
+                recap_voice: document.getElementById('optRecapVoice').value
+            };
+        }
+
+        function buildOptionsQuery(options) {
+            const params = new URLSearchParams();
+            params.append('filename', 'transcript.srt');
+            params.append('min_duration', options.min_duration);
+            params.append('max_duration', options.max_duration);
+            params.append('gap', options.gap);
+            params.append('similarity', options.similarity);
+            params.append('cut_mode', options.cut_mode);
+            params.append('use_embeddings', options.use_embeddings);
+            return params.toString();
+        }
+
+        function updateProcessButton() {
+            const hasVideo = videoPath !== '';
+            const hasTranscript = transcriptPath !== '';
+            processBtn.disabled = !(hasVideo && hasTranscript);
+        }
+
+        // Health Check
+        async function checkHealth() {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                
+                if (data.ok) {
+                    statusDot.className = 'status-dot';
+                    statusText.textContent = 'Server OK';
+                    
+                    if (!data.ffmpeg_found) {
+                        ffmpegWarning.style.display = 'block';
+                        log('Cảnh báo: ffmpeg không tìm thấy trong PATH');
+                    } else {
+                        ffmpegWarning.style.display = 'none';
+                        log('Sẵn sàng - ffmpeg đã cài đặt');
+                    }
+                } else {
+                    throw new Error('Health check failed');
+                }
+            } catch (error) {
+                statusDot.className = 'status-dot error';
+                statusText.textContent = 'Lỗi kết nối';
+                ffmpegWarning.style.display = 'none';
+                log('Không thể kết nối server: ' + error.message);
+            }
+        }
+
+        // Video Upload with XMLHttpRequest for progress
+        function uploadVideo(file) {
+            return new Promise((resolve, reject) => {
+                const xhr = new XMLHttpRequest();
+                const url = '/api/upload?filename=' + encodeURIComponent(file.name);
+                
+                xhr.open('POST', url, true);
+                xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
+                
+                xhr.upload.onprogress = (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        videoProgressFill.style.width = percent + '%';
+                        videoProgressText.textContent = percent + '%';
+                        videoProgress.classList.add('visible');
+                    }
+                };
+                
+                xhr.onload = () => {
+                    videoProgress.classList.remove('visible');
+                    if (xhr.status >= 200 && xhr.status < 300) {
+                        try {
+                            const data = JSON.parse(xhr.responseText);
+                            if (data.ok) {
+                                videoPath = data.video_path;
+                                videoInfo.innerHTML = '<strong>✓ Đã upload:</strong> ' + data.name + ' (' + formatFileSize(file.size) + ')';
+                                videoInfo.classList.add('visible');
+                                videoZone.classList.add('has-file');
+                                log('Đã upload video: ' + data.name);
+                                updateProcessButton();
+                                resolve(data);
+                            } else {
+                                reject(new Error(data.error || 'Upload failed'));
+                            }
+                        } catch (e) {
+                            reject(new Error('Invalid response'));
+                        }
+                    } else {
+                        reject(new Error('Upload failed: ' + xhr.statusText));
+                    }
+                };
+                
+                xhr.onerror = () => {
+                    videoProgress.classList.remove('visible');
+                    reject(new Error('Network error'));
+                };
+                
+                xhr.send(file);
+            });
+        }
+
+        // Parse Transcript
+        async function parseTranscript(file) {
+            const options = getOptions();
+            const queryString = buildOptionsQuery(options);
+            
+            try {
+                const response = await fetch('/api/parse?' + queryString, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': file.type || 'text/plain'
+                    },
+                    body: file
+                });
+                
+                const data = await response.json();
+                
+                if (data.ok) {
+                    transcriptPath = data.transcript_path;
+                    parsedData = data;
+                    
+                    transcriptInfo.innerHTML = '<strong>✓ Đã phân tích:</strong> ' + data.segment_count + ' đoạn, ' + data.topics.length + ' chủ đề';
+                    transcriptInfo.classList.add('visible');
+                    transcriptZone.classList.add('has-file');
+                    
+                    renderTopics(data);
+                    updateProcessButton();
+                    log('Đã phân tích transcript: ' + data.topics.length + ' chủ đề');
+                    return data;
+                } else {
+                    throw new Error(data.error || 'Parse failed');
+                }
+            } catch (error) {
+                showError(error.message);
+                log('Lỗi khi phân tích: ' + error.message);
+                throw error;
+            }
+        }
+
+        // Render Topics
+        function renderTopics(data) {
+            emptyState.style.display = 'none';
+            scriptSection.style.display = 'block';
+            clipsSection.style.display = 'none';
+            
+            let html = '';
+            
+            // Group transcript lines by topic
+            data.topics.forEach((topic, topicIndex) => {
+                const topicLines = data.transcript.filter(line => {
+                    return line.start >= topic.start && line.end <= topic.end;
+                });
+                
+                html += '<div class="topic-card">';
+                html += '<div class="topic-header">';
+                html += '<div class="topic-title">' + escapeHtml(topic.title) + '</div>';
+                html += '<div class="topic-meta">';
+                html += '<span>⏱️ ' + topic.start_ts + ' – ' + topic.end_ts + '</span>';
+                html += '<span>⏳ ' + topic.duration.toFixed(1) + 's</span>';
+                html += '</div>';
+                html += '</div>';
+                
+                if (topic.summary) {
+                    html += '<div class="topic-summary">' + escapeHtml(topic.summary) + '</div>';
+                }
+                
+                html += '<div class="transcript-lines">';
+                topicLines.forEach(line => {
+                    html += '<div class="transcript-line">';
+                    html += '<span class="timestamp">[' + line.start_ts + ']</span>';
+                    html += escapeHtml(line.text);
+                    html += '</div>';
+                });
+                html += '</div>';
+                html += '</div>';
+            });
+            
+            topicsContainer.innerHTML = html;
+        }
+
+        // Render Clips
+        function renderClips(data) {
+            emptyState.style.display = 'none';
+            clipsSection.style.display = 'block';
+            
+            outputDirCode.textContent = data.output_dir;
+            outputDirCode.title = 'Click để copy';
+            outputDirCode.onclick = () => {
+                navigator.clipboard.writeText(data.output_dir);
+                log('Đã copy đường dẫn output');
+            };
+            
+            let html = '';
+            data.episodes.forEach(episode => {
+                html += '<div class="clip-card">';
+                html += '<div class="clip-video">';
+                html += '<video controls preload="metadata">';
+                html += '<source src="' + episode.clip + '" type="video/mp4">';
+                html += 'Trình duyệt không hỗ trợ video tag';
+                html += '</video>';
+                html += '</div>';
+                html += '<div class="clip-info">';
+                html += '<div class="clip-title">Tập ' + episode.index + ': ' + escapeHtml(episode.title) + '</div>';
+                html += '<div class="clip-meta">';
+                html += '<span>⏱️ ' + episode.start_timestamp + ' – ' + episode.end_timestamp + '</span>';
+                html += '<span>⏳ ' + episode.duration.toFixed(1) + 's</span>';
+                html += '</div>';
+                if (episode.summary) {
+                    html += '<div class="clip-summary">' + escapeHtml(episode.summary) + '</div>';
+                }
+                html += '<a href="' + episode.download + '" class="clip-download" download>⬇️ Tải clip</a>';
+                html += '</div>';
+                html += '</div>';
+            });
+            
+            clipsGrid.innerHTML = html;
+            log('Đã tách ' + data.episode_count + ' tập video');
+        }
+
+        // Process Video
+        async function processVideo() {
+            if (!videoPath || !transcriptPath) {
+                showError('Vui lòng upload cả video và transcript');
+                return;
+            }
+            
+            const options = getOptions();
+            const payload = {
+                video_path: videoPath,
+                transcript_path: transcriptPath,
+                min_duration: options.min_duration,
+                max_duration: options.max_duration,
+                gap: options.gap,
+                similarity: options.similarity,
+                cut_mode: options.cut_mode,
+                use_embeddings: options.use_embeddings,
+                metadata_format: 'json',
+                add_recaps: options.add_recaps,
+                recap_duration: options.recap_duration,
+                recap_lang: options.recap_lang,
+                recap_voice: options.recap_voice
+            };
+            
+            // Optional output_dir
+            const outputDir = document.getElementById('outputDir')?.value;
+            if (outputDir) {
+                payload.output_dir = outputDir;
+            }
+            
+            processBtn.disabled = true;
+            processBtn.innerHTML = '<span class="spinner"></span> Đang xử lý...';
+            log('Đang xử lý video...');
+            
+            try {
+                const response = await fetch('/api/process', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(payload)
+                });
+                
+                const data = await response.json();
+                
+                if (data.ok) {
+                    renderClips(data);
+                    updateProcessButton();
+                } else {
+                    throw new Error(data.error || 'Process failed');
+                }
+            } catch (error) {
+                showError(error.message);
+                log('Lỗi khi xử lý: ' + error.message);
+            } finally {
+                processBtn.disabled = false;
+                processBtn.innerHTML = '✂️ Tách video';
+            }
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Event Listeners
+        videoInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                uploadVideo(file).catch(error => {
+                    showError(error.message);
+                });
+            }
+        });
+
+        transcriptInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                parseTranscript(file).catch(() => {});
+            }
+        });
+
+        videoPathInput.addEventListener('change', () => {
+            const path = videoPathInput.value.trim();
+            if (path) {
+                videoPath = path;
+                videoInfo.innerHTML = '<strong>✓ Đường dẫn:</strong> ' + escapeHtml(path);
+                videoInfo.classList.add('visible');
+                videoZone.classList.add('has-file');
+                updateProcessButton();
+                log('Đã chọn đường dẫn video: ' + path);
+            }
+        });
+
+        parseBtn.addEventListener('click', () => {
+            const file = transcriptInput.files[0];
+            if (!file) {
+                showError('Vui lòng chọn file transcript');
+                return;
+            }
+            parseTranscript(file).catch(() => {});
+        });
+
+        processBtn.addEventListener('click', () => {
+            processVideo();
+        });
+
+        // Drag and Drop
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            videoZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+            
+            transcriptZone.addEventListener(eventName, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+            });
+        });
+
+        ['dragenter', 'dragover'].forEach(eventName => {
+            videoZone.addEventListener(eventName, () => {
+                videoZone.classList.add('dragover');
+            });
+            
+            transcriptZone.addEventListener(eventName, () => {
+                transcriptZone.classList.add('dragover');
+            });
+        });
+
+        ['dragleave', 'drop'].forEach(eventName => {
+            videoZone.addEventListener(eventName, () => {
+                videoZone.classList.remove('dragover');
+            });
+            
+            transcriptZone.addEventListener(eventName, () => {
+                transcriptZone.classList.remove('dragover');
+            });
+        });
+
+        videoZone.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && files[0].type.startsWith('video/')) {
+                uploadVideo(files[0]).catch(error => {
+                    showError(error.message);
+                });
+            }
+        });
+
+        transcriptZone.addEventListener('drop', (e) => {
+            const files = e.dataTransfer.files;
+            if (files.length > 0 && (files[0].name.endsWith('.srt') || files[0].name.endsWith('.vtt'))) {
+                parseTranscript(files[0]).catch(() => {});
+            }
+        });
+
+        // Initialize
+        checkHealth();
+    </script>
+</body>
+</html>
