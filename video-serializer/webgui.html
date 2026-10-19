@@ -695,6 +695,23 @@
                     </select>
                 </div>
                 <div class="option-group">
+                    <label for="optStrategy">Cách tách đoạn</label>
+                    <select id="optStrategy">
+                        <option value="topic" selected>Theo chủ đề (mặc định)</option>
+                        <option value="retention">Giữ chân người xem (kết bằng câu hỏi/mồi nhử)</option>
+                    </select>
+                </div>
+                <div class="option-group">
+                    <label for="optTopic">Hook theo chủ đề</label>
+                    <select id="optTopic">
+                        <option value="none" selected>Không dùng hook theo chủ đề</option>
+                        <option value="travel">Travel, Exploration &amp; Experience</option>
+                        <option value="pranks">Hide and Seek &amp; Pranks</option>
+                        <option value="sports">Sports &amp; Challenges</option>
+                    </select>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Chọn chủ đề để cắt theo mồi nhử &amp; hiện teaser 'Watch Part 2!' ở đầu clip.</div>
+                </div>
+                <div class="option-group">
                     <label style="font-weight: 600; color: var(--text-primary); margin-bottom: 10px;">Nhắc lại tập trước</label>
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
                         <input type="checkbox" id="optAddRecaps" style="width: auto;">
@@ -826,6 +843,8 @@
                 similarity: parseFloat(document.getElementById('similarity').value) || 0.45,
                 cut_mode: document.getElementById('cutMode').value,
                 use_embeddings: document.getElementById('useEmbeddings').value,
+                strategy: document.getElementById('optStrategy').value,
+                topic: document.getElementById('optTopic').value,
                 add_recaps: document.getElementById('optAddRecaps').checked ? 'true' : 'false',
                 recap_duration: parseFloat(document.getElementById('optRecapDuration').value) || 4,
                 recap_lang: document.getElementById('optRecapLang').value,
@@ -842,6 +861,7 @@
             params.append('similarity', options.similarity);
             params.append('cut_mode', options.cut_mode);
             params.append('use_embeddings', options.use_embeddings);
+            params.append('strategy', options.strategy);
             return params.toString();
         }
 
@@ -1065,6 +1085,8 @@
                 similarity: options.similarity,
                 cut_mode: options.cut_mode,
                 use_embeddings: options.use_embeddings,
+                strategy: options.strategy,
+                topic: options.topic,
                 metadata_format: 'json',
                 add_recaps: options.add_recaps,
                 recap_duration: options.recap_duration,

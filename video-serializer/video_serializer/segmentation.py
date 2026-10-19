@@ -38,6 +38,54 @@ _WORD_RE = re.compile(r"\w+", re.UNICODE)
 
 _CHAR_NGRAM = 3
 
+# --------------------------------------------------------------------------- #
+# Retention-mode signals (English-focused; stdlib-only)
+# --------------------------------------------------------------------------- #
+# First-word interrogatives that turn a declarative clip-ending into a question.
+_INTERROGATIVES: tuple = (
+    "how", "why", "what", "when", "where", "who", "whom", "whose", "which",
+    "can", "could", "will", "would", "should",
+    "do", "does", "did",
+    "is", "are", "was", "were",
+    "have", "has", "had",
+)
+
+# Cliffhanger / hook phrases. Stored in lowercase; matched against the lowercased
+# end of the clip text. Both curly and straight apostrophe variants are listed
+# so subtitle transcripts (which vary wildly in apostrophe style) all hit.
+_CLIFFHANGERS: tuple = (
+    "but",
+    "however",
+    "here's the thing",
+    "heres the thing",
+    "the problem is",
+    "the catch",
+    "surprisingly",
+    "interestingly",
+    "unfortunately",
+    "that's when",
+    "thats when",
+    "that's where",
+    "thats where",
+    "the secret",
+    "the question is",
+    "what if",
+    "imagine",
+    "now the real question",
+    "one more thing",
+    "here's where it gets",
+    "heres where it gets",
+    "but first",
+    "the real answer",
+    "so why",
+    "which is why",
+)
+
+# Target clip length for retention mode (~4 minutes). The scorer rewards clips
+# that reach this target and gently penalises overshoot; the partitioner still
+# honours ``max_topic_duration`` as a hard upper bound.
+_RETENTION_TARGET: float = 240.0
+
 
 class SegmentationError(Exception):
     """Raised when segmentation cannot proceed.
@@ -189,6 +237,125 @@ def _group_embeddings(
 
 
 # --------------------------------------------------------------------------- #
+# Retention-mode boundary pass (English-focused, stdlib-only)
+# --------------------------------------------------------------------------- #
+def _retention_score(
+    segments: List[TranscriptSegment],
+    start: int,
+    end_idx: int,
+    duration: float,
+    config: PipelineConfig,
+) -> float:
+    """Score how well a candidate clip ``segments[start..end_idx]`` hooks a viewer.
+
+    Higher = better. Components are summed:
+
+    - ``+3.0`` when the closing segment contains a literal ``?`` (clear hook).
+    - ``+1.5`` when the closing segment starts with an interrogative word
+      (e.g. ``"Why is this..."``) even without punctuation.
+    - ``+1.0`` when the tail of the clip text mentions a known cliffhanger
+      phrase (``"but"``, ``"however"``, ``"the problem is"``, ...).
+    - duration term: rewards length up to ``_RETENTION_TARGET`` (~4 min),
+      mildly penalises too-short clips, very lightly penalises overshoot.
+    - ``+0.5`` when there is a next segment and the gap to it is a clean
+      ``>=0.5s`` pause (an easy ffmpeg cut point).
+    """
+    score = 0.0
+    last = segments[end_idx]
+    last_text = last.text or ""
+
+    # Literal question mark anywhere in the closing segment.
+    if "?" in last_text:
+        score += 3.0
+
+    # Closing segment begins with an interrogative (first word via _WORD_RE).
+    first_word_match = _WORD_RE.search(last_text)
+    if first_word_match and first_word_match.group(0).lower() in _INTERROGATIVES:
+        score += 1.5
+
+    # Cliffhanger phrase in the tail of the clip's combined text (checked once).
+    clip_text = " ".join(segments[i].text for i in range(start, end_idx + 1))
+    tail = clip_text[-60:].lower() if clip_text else ""
+    if tail:
+        for phrase in _CLIFFHANGERS:
+            if phrase in tail:
+                score += 1.0
+                break
+
+    # Topic-keyword bonus: when the user picked a topic (Travel / Pranks / ...),
+    # prefer ending the clip on one of that topic's cliffhanger phrases. This is
+    # only a scoring nudge -- the cut still falls between whole segments, so
+    # content is preserved exactly. ``topic == "none"`` (default) is a no-op.
+    topic = getattr(config, "topic", "none")
+    if topic and topic != "none":
+        from .hooks import cut_keywords_for
+        kws = cut_keywords_for(topic)
+        if kws:
+            tail120 = clip_text[-120:].lower() if clip_text else ""
+            if tail120 and any(k in tail120 for k in kws):
+                score += 1.5
+
+    # Duration term: reward up to target, gently punish short, lightly punish overshoot.
+    score += min(duration, _RETENTION_TARGET) * 0.005
+    score -= max(0.0, _RETENTION_TARGET - duration) * 0.01
+    score -= max(0.0, duration - _RETENTION_TARGET) * 0.003
+
+    # Clean pause to the next segment.
+    if end_idx + 1 < len(segments):
+        next_seg = segments[end_idx + 1]
+        if next_seg.start - last.end >= 0.5:
+            score += 0.5
+
+    return score
+
+
+def _group_retention(
+    segments: List[TranscriptSegment], config: PipelineConfig
+) -> List[List[int]]:
+    """Greedy retention-mode partition: end each clip on the strongest hook.
+
+    From ``start``, scans forward while ``duration <= config.max_topic_duration``,
+    remembering the candidate end-index with the highest ``_retention_score``.
+    Closes the clip at that best end and continues from ``best_end + 1``.
+
+    Each group is always a contiguous index range (cuts fall only between whole
+    segments), so the concatenation of all topic texts still equals the
+    concatenation of all segment texts. Forward progress is guaranteed: a group
+    always contains at least one segment even when no candidate scored above
+    the initial single-segment end.
+    """
+    n = len(segments)
+    groups: List[List[int]] = []
+    start = 0
+    while start < n:
+        best_end = start
+        best_score = _retention_score(
+            segments, start, start, 0.0, config
+        )
+        end_idx = start
+        while end_idx < n:
+            duration = segments[end_idx].end - segments[start].start
+            if duration > config.max_topic_duration:
+                break
+            score = _retention_score(
+                segments, start, end_idx, duration, config
+            )
+            if score > best_score:
+                best_score = score
+                best_end = end_idx
+            end_idx += 1
+
+        # Forward-progress guarantee: at least one segment per group. If the
+        # while-loop never found any candidate (e.g. every candidate was over
+        # the cap), ``best_end == start`` and we still advance one step.
+        if best_end < start:
+            best_end = start
+        groups.append(list(range(start, best_end + 1)))
+        start = best_end + 1
+    return groups
+
+
+# --------------------------------------------------------------------------- #
 # Duration constraint passes
 # --------------------------------------------------------------------------- #
 def _group_duration(group: List[int], segments: List[TranscriptSegment]) -> float:
@@ -323,7 +490,12 @@ def segment_topics(
     if not segments:
         raise SegmentationError("Cannot segment an empty transcript (no segments).")
 
-    if config.use_embeddings is True:
+    # Retention strategy overrides similarity/embedding grouping entirely: cuts
+    # are placed where the heuristic hook score is highest, then re-checked
+    # against min/max duration in the passes below.
+    if getattr(config, "cut_strategy", "topic") == "retention":
+        groups = _group_retention(segments, config)
+    elif config.use_embeddings is True:
         groups = _group_embeddings(segments, config)
     elif config.use_embeddings is False:
         groups = _group_heuristic(segments, config)
@@ -425,6 +597,73 @@ def _self_test() -> None:
     # title/summary must be left for the enrichment stage
     for topic in topics:
         assert topic.title == "" and topic.summary == ""
+
+    # ----- retention-mode self-test -----
+    # Synthetic English transcript: two loosely-related paragraphs with a
+    # question mark, a "but" cliffhanger, and a long flat stretch. The
+    # similarity score on these sentences is high (shared "machine learning"
+    # vocabulary), so the default "topic" strategy would happily merge them
+    # all; retention mode must still cut somewhere and must preserve content.
+    english_texts = [
+        "we begin with a quick overview of machine learning fundamentals",
+        "machine learning is a field that keeps evolving every year",
+        "neural networks are at the heart of modern machine learning",
+        "training data quality matters more than model size",
+        "the trick is to balance bias and variance carefully",
+        "but here is the part nobody tells you about machine learning",
+        "why does overfitting ruin so many production models in practice",
+        "regularization and cross validation can fix most of these problems",
+        "in production you also need to monitor for data drift over time",
+        "the real answer is to keep iterating and measure everything you ship",
+        "now the real question is which metric actually tracks user value",
+        "imagine you could detect drift before users even notice it",
+    ]
+    english_segments: List[TranscriptSegment] = []
+    cursor = 0.0
+    for text in english_texts:
+        start = cursor
+        end = start + 6.0  # 6s per line -> 72s total transcript
+        english_segments.append(
+            TranscriptSegment(index=len(english_segments), start=start, end=end, text=text)
+        )
+        cursor = end
+
+    retention_config = PipelineConfig(
+        cut_strategy="retention",
+        use_embeddings=False,
+        min_topic_duration=1.0,
+        max_topic_duration=120.0,
+    )
+    retention_topics = segment_topics(english_segments, retention_config)
+
+    # (a) at least one topic
+    assert retention_topics, "retention mode produced no topics"
+    # (b) every topic within max duration
+    for topic in retention_topics:
+        assert topic.duration <= 120.0, (
+            f"retention topic duration {topic.duration} > max_topic_duration"
+        )
+    # (c) content preservation: joined topic text == joined segment text
+    # (whitespace-insensitive -- topic.text joins segments with single spaces
+    # but the segment texts themselves may carry arbitrary whitespace).
+    def _flatten_texts(items) -> str:
+        chunks = []
+        for item in items:
+            chunks.append(" ".join((item.text or "").split()))
+        return " ".join(chunks).strip()
+
+    assert _flatten_texts(retention_topics) == _flatten_texts(english_segments), (
+        "retention mode dropped / duplicated / reordered segment text"
+    )
+    # (d) retention groups must still be contiguous index ranges (sanity)
+    expected_index = 0
+    for topic in retention_topics:
+        for offset, seg in enumerate(topic.segments):
+            assert seg.index == expected_index + offset, (
+                f"retention topic breaks contiguity at segment index "
+                f"{seg.index} (expected {expected_index + offset})"
+            )
+        expected_index = topic.segments[-1].index + 1
 
     print("PASS")
 

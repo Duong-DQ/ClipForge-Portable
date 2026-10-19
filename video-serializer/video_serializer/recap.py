@@ -397,6 +397,8 @@ def build_intro(
     ref_clip_path: str,
     out_path: str,
     config: "PipelineConfig",
+    header_override: "Optional[str]" = None,
+    body_override: "Optional[str]" = None,
 ) -> Tuple[str, float]:
     """Render a recap intro MP4 for clip ``prev_index_1based + 1``.
 
@@ -406,6 +408,12 @@ def build_intro(
     (``"Nhắc lại tập trước"``) near the top and the wrapped recap text centered.
     Audio is either the optional edge-tts voice-over (padded/trimmed to the
     intro duration) or trailing silence.
+
+    When ``header_override`` / ``body_override`` are provided (non-``None``),
+    they REPLACE the default localized header / recap body entirely; everything
+    else (background colour, font, drawtext layout, ffmpeg encode + concat
+    machinery) is identical. The optional TTS voice-over reads the body text
+    shown on the card (the override when supplied, otherwise the neutral recap).
 
     Returns ``(out_path, intro_duration)`` where ``intro_duration`` is
     ``max(1.0, config.recap_duration)``. Raises :class:`FFmpegError` when the
@@ -422,8 +430,14 @@ def build_intro(
     duration = max(1.0, float(config.recap_duration))
 
     lang = _resolve_lang(prev_topic, config)
-    header_text = _HEADER_BY_LANG.get(lang, _HEADER_BY_LANG["en"])
-    body_text = make_recap_text(prev_topic, prev_index_1based, lang=lang)
+    default_header = _HEADER_BY_LANG.get(lang, _HEADER_BY_LANG["en"])
+    # Overrides (used by topic-aware hooks to show a sensational teaser card)
+    # take the slot wholesale; ``None`` keeps the existing neutral default.
+    header_text = header_override if header_override is not None else default_header
+    if body_override is not None:
+        body_text = body_override
+    else:
+        body_text = make_recap_text(prev_topic, prev_index_1based, lang=lang)
     body_wrapped = "\n".join(_wrap_text(body_text, width=42)) or body_text
 
     font_path = _pick_font()
@@ -630,12 +644,33 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
     ``clip.intro_seconds`` records the added duration. A per-clip failure is
     logged and skipped without stopping the others. Returns immediately when
     ``config.add_recaps`` is falsy, and removes its temp dir best-effort.
+
+    Topic-aware teaser cards
+    ------------------------
+    When ``config.topic`` is set (not ``"none"``), every intro from clip 2
+    onward (ep = i + 1, with the *first* introed clip being ep 2) shows a
+    sensational teaser from that topic instead of the neutral recap: header
+    ``"PHẦN {ep}"`` + the topic's ``teasers[ep - 2]`` (modulo the list length)
+    via :func:`build_intro`'s ``header_override`` / ``body_override`` knobs.
+    When the topic has no teasers (or the topic is ``"none"``) the existing
+    neutral recap is used -- byte-identical to the original behaviour.
     """
     if not config.add_recaps:
         return
 
     tmpdir = os.path.join(output_dir, "_recap_tmp")
     os.makedirs(tmpdir, exist_ok=True)
+
+    topic = str(getattr(config, "topic", "none") or "none").strip().lower()
+    teaser_header: "Optional[str]" = None
+    teaser_body: "Optional[str]" = None
+    pick_teaser = None
+    if topic and topic != "none":
+        try:
+            from .hooks import pick_teaser as _pick_teaser
+            pick_teaser = _pick_teaser
+        except Exception:  # noqa: BLE001 - missing hooks.json must never crash the pipeline
+            pick_teaser = None
 
     try:
         for i in range(1, len(topics)):
@@ -647,20 +682,39 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
                 continue
 
             ep = i + 1
+            # Topic teaser: the first introed clip (ep == 2) gets teaser[0],
+            # ep 3 gets teaser[1], etc.  An empty teaser (or missing topic)
+            # silently falls back to the neutral recap below.
+            teaser_header = None
+            teaser_body = None
+            if pick_teaser is not None:
+                teaser = pick_teaser(topic, ep - 2)
+                if teaser:
+                    teaser_header = "PHẦN %d" % ep
+                    teaser_body = teaser
+
             intro = os.path.join(tmpdir, "intro_ep%02d.mp4" % ep)
             final = os.path.join(tmpdir, "final_ep%02d.mp4" % ep)
             try:
                 intro_path, intro_dur = build_intro(
-                    prev, prev_index_1based, clip.file, intro, config
+                    prev, prev_index_1based, clip.file, intro, config,
+                    header_override=teaser_header,
+                    body_override=teaser_body,
                 )
                 prepend_intro(clip.file, intro_path, final)
                 # Replace the clip in place (keep its nice filename).
                 os.replace(final, clip.file)
                 clip.intro_seconds = float(intro_dur)
-                print(
-                    "[recap] prepended intro to episode %d (recap of ep %d, ~%.1fs)"
-                    % (ep, prev_index_1based, intro_dur)
-                )
+                if teaser_body:
+                    print(
+                        "[recap] prepended teaser intro to episode %d "
+                        "(topic=%s, ~%.1fs)" % (ep, topic, intro_dur)
+                    )
+                else:
+                    print(
+                        "[recap] prepended intro to episode %d (recap of ep %d, ~%.1fs)"
+                        % (ep, prev_index_1based, intro_dur)
+                    )
             except Exception as exc:  # noqa: BLE001 - one clip must not stop the rest
                 print(
                     "[recap] WARNING: could not add intro to episode %d: %s "

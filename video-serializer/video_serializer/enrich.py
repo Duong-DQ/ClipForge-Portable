@@ -48,6 +48,34 @@ _MAX_TITLE = 70
 _MAX_SUMMARY = 220
 _ELLIPSIS = "\u2026"
 
+# A standard ~120-word English stopword set used by the offline extractive
+# summary. Lower-cased. Keeping this inline (rather than downloading NLTK) keeps
+# the core offline and stdlib-only.
+_EN_STOPWORDS: set = {
+    "a", "about", "above", "across", "after", "again", "against", "all",
+    "almost", "along", "already", "also", "although", "always", "am", "among",
+    "an", "and", "another", "any", "anyone", "anything", "are", "as", "at",
+    "back", "be", "because", "been", "before", "being", "between", "both",
+    "but", "by", "came", "can", "cannot", "could", "did", "do", "does",
+    "doing", "done", "down", "during", "each", "either", "else", "enough",
+    "etc", "even", "ever", "every", "few", "for", "from", "further",
+    "had", "has", "have", "having", "he", "her", "here", "hers", "herself",
+    "him", "himself", "his", "how", "however", "i", "if", "in", "into",
+    "is", "it", "its", "itself", "just", "later", "least", "less", "let",
+    "like", "made", "make", "many", "may", "me", "might", "more", "most",
+    "much", "must", "my", "myself", "neither", "never", "no", "nor",
+    "not", "now", "of", "off", "on", "once", "one", "only", "or", "other",
+    "our", "ours", "ourselves", "out", "over", "own", "per", "perhaps",
+    "quite", "rather", "really", "said", "same", "say", "says", "she",
+    "should", "since", "so", "some", "such", "than", "that", "the",
+    "their", "theirs", "them", "themselves", "then", "there", "these",
+    "they", "thing", "things", "this", "those", "though", "through",
+    "thus", "to", "too", "under", "until", "up", "upon", "us", "very",
+    "was", "we", "well", "were", "what", "when", "where", "which", "while",
+    "who", "whom", "whose", "why", "will", "with", "within", "without",
+    "would", "yes", "yet", "you", "your", "yours", "yourself", "yourselves",
+}
+
 
 def _clean(text: str) -> str:
     """Collapse whitespace and strip leading/trailing punctuation + spaces."""
@@ -97,6 +125,72 @@ def _first_sentences(text: str, count: int = 2) -> str:
     return " ".join(sentences) if sentences else text
 
 
+def _sentences(text: str) -> list[str]:
+    """Split ``text`` into sentences using the existing ``_SENTENCE_RE``.
+
+    Reuses the same Latin + CJK terminator regex used elsewhere in this module
+    so the splitter behaves identically to the title/summary code paths. Empty
+    fragments (from runs of whitespace) are dropped.
+    """
+    text = (text or "").strip()
+    if not text:
+        return []
+    parts = _SENTENCE_RE.split(text)
+    # ``parts`` alternates: sentence, separator, sentence, separator, ...
+    result: list[str] = []
+    for i in range(0, len(parts), 2):
+        chunk = parts[i].strip()
+        if chunk:
+            result.append(chunk)
+    return result
+
+
+def _extractive_summary(topic: Topic) -> str:
+    """Pick the 2-3 most content-bearing sentences of ``topic.text``.
+
+    A standard frequency-based extractive summariser (TextRank-adjacent,
+    without the graph): build word frequencies over lowercased, non-stopword
+    tokens across all sentences, score each sentence by the sum of its
+    non-stopword frequencies, then length-normalise by the count of non-stop
+    words to ``**0.6`` so a long bag-of-words sentence is not unfairly rewarded
+    over a shorter, denser one. The 2-3 best sentences are re-ordered by their
+    original position in the text so the digest reads chronologically.
+
+    Returns the joined chosen sentences; the caller truncates to
+    ``_MAX_SUMMARY``.
+    """
+    sents = _sentences(topic.text)
+    if len(sents) < 2:
+        return topic.text.strip()
+
+    # Word frequencies across all sentences (stopwords excluded).
+    freq: dict = {}
+    for s in sents:
+        for w in re.findall(r"\w+", s.lower()):
+            if w in _EN_STOPWORDS:
+                continue
+            freq[w] = freq.get(w, 0) + 1
+
+    # Score each sentence, length-normalised to avoid long-sentence bias.
+    scored: list[tuple[int, float]] = []
+    for idx, s in enumerate(sents):
+        nonstop = [w for w in re.findall(r"\w+", s.lower()) if w not in _EN_STOPWORDS]
+        if not nonstop:
+            continue
+        raw = sum(freq.get(w, 0) for w in nonstop)
+        norm = raw / (max(1, len(nonstop)) ** 0.6)
+        scored.append((idx, norm))
+
+    if not scored:
+        return topic.text.strip()
+
+    pick_count = 2 if len(sents) <= 4 else 3
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    chosen_indexes = sorted(idx for idx, _ in scored[:pick_count])
+    chosen = [sents[i] for i in chosen_indexes]
+    return " ".join(chosen)
+
+
 def _heuristic_title(topic: Topic) -> str:
     """First sentence of the topic, cleaned and truncated; ``Episode N`` fallback."""
     title = _clean(_first_sentence(topic.text))
@@ -106,8 +200,12 @@ def _heuristic_title(topic: Topic) -> str:
 
 
 def _heuristic_summary(topic: Topic) -> str:
-    """First one-to-two sentences of the topic, cleaned and truncated."""
-    summary = _clean(_first_sentences(topic.text, 2))
+    """Frequency-based extractive summary, cleaned and truncated.
+
+    Picks the 2-3 most content-bearing sentences (not just the opening lines),
+    re-orders them chronologically, and truncates to ``_MAX_SUMMARY``.
+    """
+    summary = _clean(_extractive_summary(topic))
     if not summary:
         summary = _clean(_first_sentence(topic.text))
     if not summary:
@@ -247,5 +345,35 @@ if __name__ == "__main__":
         assert topic.summary, f"topic {topic.index} has an empty summary"
         assert len(topic.title) <= 80, f"title too long: {topic.title!r}"
         assert len(topic.summary) <= 240, f"summary too long: {topic.summary!r}"
+
+    # ----- extractive summary self-test -----
+    # Topic whose first sentence is a generic intro and whose later sentences
+    # repeat the key terms (machine learning) heavily. The offline extractive
+    # summary must NOT just echo the first sentence -- it has to pick at
+    # least one of the later, denser sentences for the digest.
+    extractive_topic = _make_topic(
+        2,
+        [
+            "in this part of the lecture we will continue from last week",
+            "machine learning models can be trained on raw data",
+            "the key trick is to feed enough machine learning examples",
+            "machine learning pipelines need clean machine learning data",
+            "we close with a quick recap of the main machine learning idea",
+        ],
+    )
+    enriched_extractive = enrich_topics([extractive_topic], PipelineConfig(use_llm=False))[0]
+    first_sentence = _sentences(extractive_topic.text)[0]
+    assert enriched_extractive.summary, "extractive summary is empty"
+    assert enriched_extractive.summary != first_sentence, (
+        f"summary is just the first sentence: {enriched_extractive.summary!r}"
+    )
+    assert len(enriched_extractive.summary) <= _MAX_SUMMARY, (
+        f"summary too long: {len(enriched_extractive.summary)} > {_MAX_SUMMARY}"
+    )
+    chosen_sents = _sentences(enriched_extractive.summary)
+    assert any(s != first_sentence for s in chosen_sents), (
+        "extractive summary did not pick any non-first sentence: "
+        f"{enriched_extractive.summary!r}"
+    )
 
     print("PASS")

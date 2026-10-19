@@ -1,0 +1,31 @@
+{
+  "travel": {
+    "label": "Travel, Exploration & Experience",
+    "cut_keywords": ["secret", "mysterious", "on any map", "no map", "strange sound", "stepped inside", "peaceful trip", "the peak", "bushes", "uncovered", "hiding", "spotted"],
+    "teasers": [
+      "What's behind this door will give you chills. Watch Part 2!",
+      "The dark secret is revealed in Part 2...",
+      "Where does this path lead? Watch Part 2 now!",
+      "What was that noise? Click Part 2 to find out!"
+    ]
+  },
+  "pranks": {
+    "label": "Hide and Seek & Pranks",
+    "cut_keywords": ["hiding spot", "inches away", "too close", "prank", "secret room", "no one could find", "hidden camera", "messed up", "reaction", "seeker", "caught", "almost"],
+    "teasers": [
+      "Too close for comfort... See if I made it out in Part 2!",
+      "The plot twist gets crazy in Part 2!",
+      "The ultimate seeker arrives in Part 2!",
+      "The instant karma is waiting for you in Part 2..."
+    ]
+  },
+  "sports": {
+    "label": "Sports & Challenges",
+    "cut_keywords": ["seconds left", "down by one", "final shot", "world record", "epic fail", "99% done", "disaster", "last second", "decides everything", "this attempt", "watch closely", "going to fail"],
+    "teasers": [
+      "Win or lose? The answer is in Part 2!",
+      "World record or epic fail? Watch Part 2!",
+      "Last-minute disaster! Click Part 2 right now."
+    ]
+  }
+}

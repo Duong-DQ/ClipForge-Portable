@@ -1,0 +1,39 @@
+1
+00:00:00,000 --> 00:00:04,000
+Welcome back to the channel, today we are talking about automation.
+
+2
+00:00:04,000 --> 00:00:08,000
+Automation can save you hours every single week without any doubt.
+
+3
+00:00:08,000 --> 00:00:12,000
+But the biggest problem is that most tools are hard to set up.
+
+4
+00:00:12,000 --> 00:00:16,000
+So why do so many people give up on automation before it pays off?
+
+5
+00:00:16,000 --> 00:00:20,000
+That is the question we are going to answer in this video right now.
+
+6
+00:00:20,000 --> 00:00:24,000
+The secret is to start with a single simple task you repeat daily.
+
+7
+00:00:24,000 --> 00:00:28,000
+For example, renaming a batch of files or sending a weekly report.
+
+8
+00:00:28,000 --> 00:00:32,000
+Once that one task works, you can copy the pattern to the rest.
+
+9
+00:00:32,000 --> 00:00:36,000
+Here is where it gets interesting, because small wins compound fast.
+
+10
+00:00:36,000 --> 00:00:40,000
+So the next step is to pick your one task and automate it today.

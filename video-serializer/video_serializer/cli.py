@@ -56,6 +56,13 @@ def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
 
     parser.add_argument("--mode", choices=["accurate", "fast"], default="accurate",
                         help="Cut mode: 'accurate' re-encodes (precise), 'fast' stream-copies (default: accurate).")
+    parser.add_argument("--strategy", choices=["topic", "retention"], default="topic",
+                        help="Cutting strategy: 'topic' = content similarity (default); 'retention' = ~3-5 min clips ending on questions/cliffhangers.")
+
+    from .hooks import topic_options as _topic_options
+    _topic_choices = ["none"] + [k for k, _ in _topic_options()]
+    parser.add_argument("--topic", choices=_topic_choices, default="none",
+                        help="Topic for hook-based cutting + teaser (see hooks.json); 'none' = off.")
 
     emb = parser.add_mutually_exclusive_group()
     emb.add_argument("--embeddings", dest="use_embeddings", action="store_const", const=True,
@@ -101,6 +108,8 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
         similarity_threshold=args.similarity,
         use_embeddings=args.use_embeddings,
         cut_mode=args.mode,
+        cut_strategy=args.strategy,
+        topic=args.topic,
         use_llm=args.llm,
         llm_base_url=args.llm_base_url or os.environ.get("LLM_BASE_URL", ""),
         llm_api_key=args.llm_api_key or os.environ.get("LLM_API_KEY", ""),

@@ -46,6 +46,7 @@ from video_serializer.enrich import enrich_topics  # noqa: E402
 from video_serializer.cutter import cut_video, ensure_ffmpeg, FFmpegError  # noqa: E402
 from video_serializer.recap import add_recaps  # noqa: E402
 from video_serializer.utils import format_timestamp  # noqa: E402
+from video_serializer.hooks import load_hooks  # noqa: E402
 
 # Windows console is cp1252 by default; make stdout/stderr UTF-8 safe.
 for _stream in (sys.stdout, sys.stderr):
@@ -64,7 +65,7 @@ _PROCESS_LOCK = threading.Lock()
 _LAST_OUTPUT_DIR = {"dir": ""}  # newest /api/process output dir -> served via /clips + /metadata.json
 
 _OPTION_KEYS = ("min_duration", "max_duration", "gap", "similarity",
-                "use_embeddings", "cut_mode", "metadata_format")
+                "use_embeddings", "cut_mode", "cut_strategy", "metadata_format")
 
 
 def _build_config(payload: dict) -> PipelineConfig:
@@ -82,6 +83,10 @@ def _build_config(payload: dict) -> PipelineConfig:
     if cut_mode not in ("accurate", "fast"):
         cut_mode = "accurate"
 
+    strategy = str(payload.get("strategy", "topic")).strip().lower()
+    if strategy not in ("topic", "retention"):
+        strategy = "topic"
+
     meta = str(payload.get("metadata_format", "json")).strip().lower()
     if meta not in ("json", "csv"):
         meta = "json"
@@ -91,6 +96,14 @@ def _build_config(payload: dict) -> PipelineConfig:
     recap_lang = str(payload.get("recap_lang", "auto")).strip().lower()
     if recap_lang not in ("auto", "vi", "en", "zh"):
         recap_lang = "auto"
+
+    # Topic hook selection: accept only values that exist in hooks.json (plus
+    # "none" = off). Unknown / missing values degrade to "none" so the rest of
+    # the pipeline behaves exactly as before.
+    topic = str(payload.get("topic", "none")).strip().lower()
+    if topic != "none" and topic not in load_hooks():
+        topic = "none"
+
     return PipelineConfig(
         min_topic_duration=_f("min_duration", 20.0),
         max_topic_duration=_f("max_duration", 300.0),
@@ -98,6 +111,8 @@ def _build_config(payload: dict) -> PipelineConfig:
         similarity_threshold=_f("similarity", 0.45),
         use_embeddings=use_embeddings,
         cut_mode=cut_mode,
+        cut_strategy=strategy,
+        topic=topic,
         metadata_format=meta,
         add_recaps=add_recaps,
         recap_duration=max(1.0, _f("recap_duration", 4.0)),

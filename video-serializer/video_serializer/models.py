@@ -105,6 +105,9 @@ class PipelineConfig:
     cut_mode:
         ``"accurate"`` (default) re-encodes for frame-accurate cuts;
         ``"fast"`` stream-copies for speed (boundaries snap to keyframes).
+    cut_strategy:
+        ``"topic"`` (default) = current content-similarity splitting (unchanged).
+        ``"retention"`` = cut ~3-5 min clips that end on questions/cliffhangers.
 
     Recap intros (optional, post-cut)
     ---------------------------------
@@ -151,6 +154,8 @@ class PipelineConfig:
 
     # --- cutting ---
     cut_mode: str = "accurate"
+    cut_strategy: str = "topic"  # "topic" = similarity split (default); "retention" = hook-ending clips
+    topic: str = "none"  # topic key for hook-based cutting + sensational teaser (see hooks.json); "none" = off
 
     # --- recap intros (optional, post-cut) ---
     add_recaps: bool = False
