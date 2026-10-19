@@ -72,13 +72,29 @@ def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
     parser.set_defaults(use_embeddings=None)  # None => auto (use embeddings if available)
 
     parser.add_argument("--llm", action="store_true",
-                        help="Use an LLM for titles/summaries (requires base URL + API key).")
+                        help=(
+                            "Use AI (Gemini) for content-driven cut points, "
+                            "content-aware teasers, better summaries. "
+                            "Defaults to Gemini endpoint + gemini-3.8-flash if not set; "
+                            "needs internet, auto-falls-back to offline on failure."
+                        ))
     parser.add_argument("--llm-base-url", default=None,
-                        help="OpenAI-compatible base URL (env: LLM_BASE_URL).")
+                        help=(
+                            "OpenAI-compatible base URL (env: LLM_BASE_URL). "
+                            "Defaults to the Gemini endpoint when --llm is set and "
+                            "this is empty."
+                        ))
     parser.add_argument("--llm-api-key", default=None,
-                        help="LLM API key (env: LLM_API_KEY).")
+                        help=(
+                            "LLM API key (env: LLM_API_KEY). Never written to disk; "
+                            "kept in process memory only."
+                        ))
     parser.add_argument("--llm-model", default=None,
-                        help="LLM model name (env: LLM_MODEL, else gpt-4o-mini).")
+                        help=(
+                            "LLM model name (env: LLM_MODEL). "
+                            "Defaults to gemini-3.8-flash when --llm is set and "
+                            "this is empty."
+                        ))
 
     parser.add_argument("--metadata", choices=["json", "csv"], default="json",
                         help="Metadata output format (default: json).")
@@ -101,6 +117,16 @@ def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
 
 
 def _build_config(args: argparse.Namespace) -> PipelineConfig:
+    # LLM defaults: when --llm is set and the user didn't override, use the
+    # confirmed-working Gemini endpoint and a non-deprecated model.
+    base_url = args.llm_base_url or os.environ.get("LLM_BASE_URL", "")
+    model = args.llm_model or os.environ.get("LLM_MODEL", "")
+    if args.llm:
+        if not base_url.strip():
+            base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+        if not model.strip():
+            model = "gemini-3.8-flash"
+
     return PipelineConfig(
         min_topic_duration=args.min_duration,
         max_topic_duration=args.max_duration,
@@ -111,9 +137,9 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
         cut_strategy=args.strategy,
         topic=args.topic,
         use_llm=args.llm,
-        llm_base_url=args.llm_base_url or os.environ.get("LLM_BASE_URL", ""),
+        llm_base_url=base_url,
         llm_api_key=args.llm_api_key or os.environ.get("LLM_API_KEY", ""),
-        llm_model=args.llm_model or os.environ.get("LLM_MODEL", "") or "gpt-4o-mini",
+        llm_model=model,
         metadata_format=args.metadata,
         add_recaps=args.recaps,
         recap_duration=args.recap_duration,

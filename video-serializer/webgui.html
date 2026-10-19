@@ -712,6 +712,20 @@
                     <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Chọn chủ đề để cắt theo mồi nhử &amp; hiện teaser 'Watch Part 2!' ở đầu clip.</div>
                 </div>
                 <div class="option-group">
+                    <label style="font-weight: 600; color: var(--text-primary); margin-bottom: 10px;">AI (Gemini)</label>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                        <input type="checkbox" id="optUseLlm" style="width: auto;">
+                        <label for="optUseLlm" style="margin: 0; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer;">Dùng AI (Gemini): cắt theo nội dung + teaser bám nội dung</label>
+                    </div>
+                    <label for="optLlmKey" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">API key (Gemini)</label>
+                    <input type="password" id="optLlmKey" value="" placeholder="dán API key Gemini vào đây" autocomplete="off" style="margin-bottom: 10px;">
+                    <label for="optLlmBaseUrl" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Base URL (nâng cao)</label>
+                    <input type="text" id="optLlmBaseUrl" value="https://generativelanguage.googleapis.com/v1beta/openai" style="margin-bottom: 10px;">
+                    <label for="optLlmModel" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Model (nâng cao)</label>
+                    <input type="text" id="optLlmModel" value="gemini-3.8-flash" style="margin-bottom: 10px;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Cần mạng ra ngoài. Nếu gọi API thất bại sẽ tự chuyển về offline. Key không được lưu.</div>
+                </div>
+                <div class="option-group">
                     <label style="font-weight: 600; color: var(--text-primary); margin-bottom: 10px;">Nhắc lại tập trước</label>
                     <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
                         <input type="checkbox" id="optAddRecaps" style="width: auto;">
@@ -848,7 +862,11 @@
                 add_recaps: document.getElementById('optAddRecaps').checked ? 'true' : 'false',
                 recap_duration: parseFloat(document.getElementById('optRecapDuration').value) || 4,
                 recap_lang: document.getElementById('optRecapLang').value,
-                recap_voice: document.getElementById('optRecapVoice').value
+                recap_voice: document.getElementById('optRecapVoice').value,
+                use_llm: document.getElementById('optUseLlm').checked ? 'true' : 'false',
+                llm_api_key: document.getElementById('optLlmKey').value || '',
+                llm_base_url: document.getElementById('optLlmBaseUrl').value || '',
+                llm_model: document.getElementById('optLlmModel').value || ''
             };
         }
 
@@ -1091,7 +1109,11 @@
                 add_recaps: options.add_recaps,
                 recap_duration: options.recap_duration,
                 recap_lang: options.recap_lang,
-                recap_voice: options.recap_voice
+                recap_voice: options.recap_voice,
+                use_llm: options.use_llm,
+                llm_api_key: options.llm_api_key,
+                llm_base_url: options.llm_base_url,
+                llm_model: options.llm_model
             };
             
             // Optional output_dir

@@ -67,6 +67,14 @@ _LAST_OUTPUT_DIR = {"dir": ""}  # newest /api/process output dir -> served via /
 _OPTION_KEYS = ("min_duration", "max_duration", "gap", "similarity",
                 "use_embeddings", "cut_mode", "cut_strategy", "metadata_format")
 
+# Gemini defaults for the opt-in AI mode. Mirror the same values the CLI uses
+# so the two front-ends stay in sync. These are filled in by _build_config when
+# the user enables use_llm and leaves the advanced fields blank. The API key is
+# never read from a URL query string -- it only travels in the JSON body of
+# /api/process, where it stays in process memory.
+_LLM_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+_LLM_DEFAULT_MODEL = "gemini-3.8-flash"
+
 
 def _build_config(payload: dict) -> PipelineConfig:
     """Build a PipelineConfig from a flat dict of option strings/numbers."""
@@ -104,6 +112,22 @@ def _build_config(payload: dict) -> PipelineConfig:
     if topic != "none" and topic not in load_hooks():
         topic = "none"
 
+    # Opt-in AI (Gemini) mode. The flag comes from the Web UI checkbox; the key
+    # is never persisted on disk -- it lives only in this request payload. The
+    # base URL and model default to the confirmed-working Gemini endpoint when
+    # use_llm is on and the user left them blank.
+    use_llm = str(payload.get("use_llm", "false")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    llm_api_key = str(payload.get("llm_api_key", "")).strip()
+    llm_base_url = str(payload.get("llm_base_url", "")).strip()
+    llm_model = str(payload.get("llm_model", "")).strip()
+    if use_llm:
+        if not llm_base_url:
+            llm_base_url = _LLM_DEFAULT_BASE_URL
+        if not llm_model:
+            llm_model = _LLM_DEFAULT_MODEL
+
     return PipelineConfig(
         min_topic_duration=_f("min_duration", 20.0),
         max_topic_duration=_f("max_duration", 300.0),
@@ -118,6 +142,10 @@ def _build_config(payload: dict) -> PipelineConfig:
         recap_duration=max(1.0, _f("recap_duration", 4.0)),
         recap_voice=recap_voice,
         recap_lang=recap_lang,
+        use_llm=use_llm,
+        llm_base_url=llm_base_url,
+        llm_api_key=llm_api_key,
+        llm_model=llm_model,
     )
 
 

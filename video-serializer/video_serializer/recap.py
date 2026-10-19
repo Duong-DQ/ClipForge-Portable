@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -37,6 +38,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from .cutter import FFmpegError
+from .llm import chat, is_configured
 from .models import PipelineConfig, Topic
 
 # Vietnamese-capable fonts shipped with Windows (both render the diacritics used
@@ -632,6 +634,76 @@ def prepend_intro(clip_path: str, intro_path: str, out_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# LLM teaser (content-aware, graceful fallback to offline teaser/recap)
+# ---------------------------------------------------------------------------
+
+def _llm_teaser_text(prev: "Topic", config: "PipelineConfig") -> "Optional[str]":
+    """Ask the LLM for a content-aware ENGLISH teaser of the previous clip.
+
+    Returns the trimmed teaser string on success, ``None`` on any failure
+    (LLM disabled, call failed, empty response). The teaser references real
+    content from ``prev`` (title + summary + the first ~2 sentences of the
+    transcript) and explicitly avoids invented, unrelated topics.
+    """
+    title = (prev.title or "").strip()
+    summary = (prev.summary or "").strip()
+    text = (prev.text or "").strip()
+
+    # First ~2 sentences of the previous transcript (reuse the rich sentence
+    # splitter from enrich via re-import is overkill; the recap has its own
+    # light splitter that only needs to find the first two terminators).
+    def _first_two_sents(s: str) -> str:
+        s = (s or "").strip()
+        if not s:
+            return ""
+        out: list[str] = []
+        rest = s
+        for _ in range(2):
+            match = re.search(r"[.!?\u3002\uff01\uff1f]+", rest)
+            if not match:
+                if rest.strip():
+                    out.append(rest.strip())
+                break
+            cut = match.end()
+            out.append(rest[:cut].strip())
+            rest = rest[cut:].lstrip()
+            if not rest:
+                break
+        return " ".join(out)
+
+    snippet = _first_two_sents(text)
+    if not snippet:
+        snippet = summary or title
+
+    system = (
+        "You write 1-2 sentence video teaser captions in English. "
+        "You only reference the actual content you were given and never invent "
+        "unrelated topics, characters, or events."
+    )
+    user = (
+        "Write a short, punchy ENGLISH teaser (1-2 sentences, plain text, no "
+        "markdown, no hashtags) that recaps what just happened in the previous "
+        "episode and builds curiosity about what comes next.\n\n"
+        f"Previous episode title: {title}\n"
+        f"Previous episode summary: {summary}\n"
+        f"Previous episode text (first ~2 sentences): {snippet}\n"
+    )
+
+    raw = chat(config, system, user, temperature=0.4, max_tokens=80, timeout=30)
+    if not raw:
+        return None
+    # Trim to at most 2 single-line sentences; drop stray bullet/number prefixes.
+    lines = [line.strip().lstrip("-*• ").rstrip() for line in raw.splitlines() if line.strip()]
+    teaser = " ".join(lines[:2]).strip()
+    if not teaser:
+        return None
+    # Final length cap so the drawtext card still fits.
+    if len(teaser) > 240:
+        teaser = teaser[:237].rstrip() + "..."
+    return teaser
+
+
+# ---------------------------------------------------------------------------
 # Pipeline stage
 # ---------------------------------------------------------------------------
 
@@ -682,16 +754,30 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
                 continue
 
             ep = i + 1
-            # Topic teaser: the first introed clip (ep == 2) gets teaser[0],
-            # ep 3 gets teaser[1], etc.  An empty teaser (or missing topic)
-            # silently falls back to the neutral recap below.
+            # Body choice, in priority order:
+            #   1. LLM content-aware teaser (when use_llm is on AND the call
+            #      returns non-empty text). This references real content from
+            #      the previous clip -- never invented -- and aims to build
+            #      curiosity about the upcoming clip.
+            #   2. Topic teaser from hooks.json (when topic is set). Existing
+            #      behaviour, unchanged.
+            #   3. None -> build_intro falls back to the neutral localized
+            #      recap card. Existing behaviour, unchanged.
             teaser_header = None
             teaser_body = None
-            if pick_teaser is not None:
+            teaser_source = ""
+            if is_configured(config):
+                llm_body = _llm_teaser_text(prev, config)
+                if llm_body:
+                    teaser_header = "PHẦN %d" % ep
+                    teaser_body = llm_body
+                    teaser_source = "llm"
+            if teaser_body is None and pick_teaser is not None:
                 teaser = pick_teaser(topic, ep - 2)
                 if teaser:
                     teaser_header = "PHẦN %d" % ep
                     teaser_body = teaser
+                    teaser_source = "topic=%s" % topic
 
             intro = os.path.join(tmpdir, "intro_ep%02d.mp4" % ep)
             final = os.path.join(tmpdir, "final_ep%02d.mp4" % ep)
@@ -708,7 +794,7 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
                 if teaser_body:
                     print(
                         "[recap] prepended teaser intro to episode %d "
-                        "(topic=%s, ~%.1fs)" % (ep, topic, intro_dur)
+                        "(source=%s, ~%.1fs)" % (ep, teaser_source, intro_dur)
                     )
                 else:
                     print(

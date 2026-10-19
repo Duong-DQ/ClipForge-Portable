@@ -27,6 +27,7 @@ from __future__ import annotations
 import re
 from typing import List, Set
 
+from .llm import chat_json, is_configured
 from .models import PipelineConfig, Topic, TranscriptSegment
 
 __all__ = ["SegmentationError", "segment_topics"]
@@ -459,6 +460,101 @@ def _enforce_max(
 
 
 # --------------------------------------------------------------------------- #
+# LLM cut-point path (opt-in, degrades gracefully to the offline backends)
+# --------------------------------------------------------------------------- #
+def _llm_cut_points(
+    segments: List[TranscriptSegment], config: PipelineConfig
+) -> "list[int] | None":
+    """Ask the LLM to choose content-driven cut indices; ``None`` on any failure.
+
+    Builds a compact transcript (per segment: ``i\\tstart-end\\ttext``), asks the
+    model to split into ~3-5 min clips that end at real topic/narrative changes
+    or hook/question/cliffhanger endings, and parses a strict JSON
+    ``{"cuts": [c1, c2, ...]}`` response where each ``ci`` is the 0-based index
+    of the LAST segment of that clip.
+
+    Returns the validated list (strictly increasing, in ``[0, n)``) on success,
+    ``None`` otherwise. Never raises -- every error path returns ``None``.
+    """
+    n = len(segments)
+    if n == 0:
+        return None
+
+    lines: list[str] = []
+    for seg in segments:
+        text = (seg.text or "").replace("\t", " ").replace("\n", " ").strip()
+        lines.append(f"{seg.index}\t{seg.start:.2f}-{seg.end:.2f}\t{text}")
+    transcript = "\n".join(lines)
+
+    system = "You split video transcripts into short-form clips and return strict JSON only."
+    user = (
+        "Split the following timed transcript into ~3-5 minute clips.\n"
+        "Rules:\n"
+        "  - Cut ONLY at segment boundaries (use the segment index).\n"
+        "  - Prefer cuts at real topic/narrative changes or at strong "
+        "hook / question / cliffhanger endings.\n"
+        "  - 'cuts' is the list of 0-based indices of the LAST segment of each "
+        "clip. The final clip ends at the last segment automatically.\n"
+        "Return STRICT JSON of the form: {\"cuts\": [c1, c2, ...]} and nothing else.\n\n"
+        "Transcript:\n" + transcript
+    )
+
+    obj = chat_json(config, system, user, temperature=0.0, max_tokens=400)
+    if not isinstance(obj, dict):
+        return None
+    raw_cuts = obj.get("cuts")
+    if not isinstance(raw_cuts, list):
+        return None
+
+    validated: list[int] = []
+    last = -1
+    for item in raw_cuts:
+        # Coerce to int, drop anything non-numeric / out of range.
+        try:
+            value = int(item)
+        except (TypeError, ValueError):
+            continue
+        if value < 0 or value >= n:
+            continue
+        if value <= last:
+            # Not strictly increasing -- drop; do not break so the model can
+            # still produce a valid tail if the early entries are messy.
+            continue
+        validated.append(value)
+        last = value
+
+    return validated if validated else None
+
+
+def _groups_from_cuts(cuts: List[int], n: int) -> List[List[int]]:
+    """Convert a list of clip-ending indices into contiguous index groups.
+
+    ``cuts = [c1, c2, ...]`` with ``0 <= c1 < c2 < ... < n-1`` yields::
+
+        [0..c1], [c1+1..c2], ..., [last+1..n-1]
+
+    Edge guards: if the first cut is past ``n-1`` we get a single empty group
+    and return an empty list (caller should treat as failure); if the last cut
+    is the final segment there is no trailing partial clip.
+    """
+    if not cuts or n <= 0:
+        return []
+    groups: List[List[int]] = []
+    start = 0
+    for cut in cuts:
+        if cut >= n:
+            break
+        if cut < start:
+            # Defensive: should not happen if _llm_cut_points validated properly.
+            continue
+        groups.append(list(range(start, cut + 1)))
+        start = cut + 1
+    if start < n:
+        groups.append(list(range(start, n)))
+    return groups
+
+
+# --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 def segment_topics(
@@ -489,6 +585,22 @@ def segment_topics(
     """
     if not segments:
         raise SegmentationError("Cannot segment an empty transcript (no segments).")
+
+    # Opt-in: when the LLM is configured, ask it for content-driven cut points.
+    # Any failure (LLM disabled, no key, call failed, malformed response) falls
+    # through to the offline backends below so the pipeline never crashes.
+    if is_configured(config):
+        cuts = _llm_cut_points(segments, config)
+        if cuts:
+            groups = _groups_from_cuts(cuts, len(segments))
+            if groups:
+                groups = _enforce_min(groups, segments, config)
+                groups = _enforce_max(groups, segments, config)
+                print(
+                    "[segmentation] using LLM cut points: %d clip(s)"
+                    % len(_groups_from_cuts(cuts, len(segments)))
+                )
+                return _build_topics(groups, segments)
 
     # Retention strategy overrides similarity/embedding grouping entirely: cuts
     # are placed where the heuristic hook score is highest, then re-checked
@@ -668,5 +780,45 @@ def _self_test() -> None:
     print("PASS")
 
 
+# --------------------------------------------------------------------------- #
+# Pure offline tests for the LLM cut-point helpers (NO network, NO key)
+# --------------------------------------------------------------------------- #
+def _test_llm_helpers() -> None:
+    """Exercise ``_groups_from_cuts`` and the cut-list validator (no I/O)."""
+    # (a) Contiguous groups with the canonical cuts [c1, c2, ...] -> [0..c1],
+    # [c1+1..c2], ..., [last+1..n-1]. Content (joined text) is preserved.
+    segments = [
+        TranscriptSegment(index=0, start=0.0, end=1.0, text="alpha one"),
+        TranscriptSegment(index=1, start=1.0, end=2.0, text="alpha two"),
+        TranscriptSegment(index=2, start=2.0, end=3.0, text="beta one"),
+        TranscriptSegment(index=3, start=3.0, end=4.0, text="beta two"),
+        TranscriptSegment(index=4, start=4.0, end=5.0, text="gamma one"),
+        TranscriptSegment(index=5, start=5.0, end=6.0, text="gamma two"),
+    ]
+    cuts = [1, 3]  # clip1=0..1, clip2=2..3, clip3=4..5
+    groups = _groups_from_cuts(cuts, len(segments))
+    assert groups == [[0, 1], [2, 3], [4, 5]], f"got {groups!r}"
+    # content preserved in time order across the partition
+    joined = " ".join(segments[i].text for g in groups for i in g)
+    assert joined == " ".join(s.text for s in segments), "content dropped"
+
+    # (b) Last cut == n-1 collapses to a single trailing group with no leftovers.
+    groups_tail = _groups_from_cuts([2, 5], len(segments))
+    assert groups_tail == [[0, 1, 2], [3, 4, 5]], f"got {groups_tail!r}"
+
+    # (c) Empty cuts = "no cuts at all" (caller falls back to offline); n=0 is
+    # also a no-op so we never produce a phantom group.
+    assert _groups_from_cuts([], len(segments)) == []
+    assert _groups_from_cuts([0], 0) == []
+
+    # (d) Out-of-range cut beyond n-1 is truncated; content after the cap still
+    # forms a trailing group so nothing is dropped.
+    groups_truncated = _groups_from_cuts([1, 99], len(segments))
+    assert groups_truncated == [[0, 1], [2, 3, 4, 5]], f"got {groups_truncated!r}"
+
+    print("PASS")
+
+
 if __name__ == "__main__":
     _self_test()
+    _test_llm_helpers()

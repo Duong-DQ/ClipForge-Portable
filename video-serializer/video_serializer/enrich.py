@@ -21,11 +21,10 @@ terminators and truncation never assumes space-delimited words.
 """
 from __future__ import annotations
 
-import json
 import re
-import urllib.request
 from typing import List, Optional, Tuple
 
+from .llm import chat_json, is_configured
 from .models import PipelineConfig, Topic
 
 __all__ = ["enrich_topics"]
@@ -224,11 +223,24 @@ def _strip_code_fences(text: str) -> str:
     return text.strip()
 
 
-def _llm_prompt(episode_text: str) -> str:
-    """Build the chat prompt requesting a JSON title/summary object."""
-    return (
-        "You are labeling a single episode of a long video.\n"
-        "Read the episode transcript text and reply with ONLY a JSON object of "
+def _llm_enrich(topic: Topic, config: PipelineConfig) -> Optional[Tuple[str, str]]:
+    """Query the LLM for ``(title, summary)`` or return ``None`` on any failure.
+
+    Network plumbing (POST, headers, JSON parsing, key masking) lives in
+    :mod:`video_serializer.llm`; this function only assembles the prompt,
+    asks for a JSON object, and extracts/cleans the two fields. Never raises:
+    every failure path bubbles up from ``chat_json`` as ``None``.
+    """
+    episode_text = topic.text
+    if not episode_text:
+        return None
+
+    system = (
+        "You are labeling a single episode of a long video. "
+        "Reply with ONLY a JSON object and nothing else."
+    )
+    user = (
+        "Read the episode transcript and reply with ONLY a JSON object of "
         'the form {"title": "...", "summary": "..."}.\n'
         "- title: a concise, human, descriptive episode title.\n"
         "- summary: a 1-2 sentence summary of the episode.\n"
@@ -237,54 +249,14 @@ def _llm_prompt(episode_text: str) -> str:
         "Episode text:\n" + episode_text
     )
 
-
-def _llm_request_body(config: PipelineConfig, prompt: str) -> bytes:
-    """Serialize the OpenAI-compatible chat request body to UTF-8 bytes."""
-    body = {
-        "model": config.llm_model,
-        "temperature": 0,
-        "max_tokens": 140,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    return json.dumps(body).encode("utf-8")
-
-
-def _llm_enrich(topic: Topic, config: PipelineConfig) -> Optional[Tuple[str, str]]:
-    """Query the LLM for ``(title, summary)`` or return ``None`` on any failure.
-
-    Never raises: every error path (network, HTTP, JSON, missing/empty fields)
-    is swallowed and reported as ``None`` so the caller can fall back.
-    """
-    try:
-        episode_text = topic.text
-        if not episode_text:
-            return None
-        url = config.llm_base_url.rstrip("/") + "/chat/completions"
-        request = urllib.request.Request(
-            url,
-            data=_llm_request_body(config, _llm_prompt(episode_text)),
-            headers={
-                "Authorization": f"Bearer {config.llm_api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=30) as response:
-            payload = response.read().decode("utf-8", "replace")
-        parsed = json.loads(payload)
-        content = parsed["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            return None
-        obj = json.loads(_strip_code_fences(content))
-        if not isinstance(obj, dict):
-            return None
-        title = _clean(str(obj.get("title", "")))
-        summary = _clean(str(obj.get("summary", "")))
-        if not title or not summary:
-            return None
-        return _truncate(title, _MAX_TITLE), _truncate(summary, _MAX_SUMMARY)
-    except Exception:
+    obj = chat_json(config, system, user, temperature=0.0, max_tokens=140)
+    if not isinstance(obj, dict):
         return None
+    title = _clean(str(obj.get("title", "")))
+    summary = _clean(str(obj.get("summary", "")))
+    if not title or not summary:
+        return None
+    return _truncate(title, _MAX_TITLE), _truncate(summary, _MAX_SUMMARY)
 
 
 def enrich_topics(topics: List[Topic], config: PipelineConfig) -> List[Topic]:
@@ -298,7 +270,7 @@ def enrich_topics(topics: List[Topic], config: PipelineConfig) -> List[Topic]:
     for topic in topics:
         title = ""
         summary = ""
-        if config.use_llm and config.llm_base_url and config.llm_api_key:
+        if is_configured(config):
             result = _llm_enrich(topic, config)
             if result is not None:
                 title, summary = result
