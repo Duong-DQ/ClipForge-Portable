@@ -2,18 +2,6 @@
 .codegraph/
 .omo/
 
-# Python
-__pycache__/
-*.pyc
-venv/
-.venv/
-dist/
-build/
-*.egg-info/
+# Local config (may contain LLM API keys)
+video-serializer/config.json
 
-# OS
-.DS_Store
-Thumbs.db
-
-# Env
-.env

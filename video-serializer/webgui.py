@@ -75,6 +75,21 @@ _OPTION_KEYS = ("min_duration", "max_duration", "gap", "similarity",
 _LLM_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
 _LLM_DEFAULT_MODEL = "gemini-3.8-flash"
 
+# Persistent config file (user fills in API key once; survives restarts)
+_CONFIG_FILE = os.path.join(TOOL_DIR, "config.json")
+
+
+def _load_config_file() -> dict:
+    """Load config.json from the project root; return {} on missing/invalid."""
+    try:
+        with open(_CONFIG_FILE, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
 
 def _build_config(payload: dict) -> PipelineConfig:
     """Build a PipelineConfig from a flat dict of option strings/numbers."""
@@ -105,6 +120,23 @@ def _build_config(payload: dict) -> PipelineConfig:
     if recap_lang not in ("auto", "vi", "en", "zh"):
         recap_lang = "auto"
 
+    # Recap style: "text" (default drawtext card) or "video" (highlight reels
+    # + TTS, populated from the LLM-driven highlights attached during
+    # segmentation). Unknown values fall back to "text" so the UI can ship
+    # new options without crashing older builds.
+    recap_style = str(payload.get("recap_style", "text")).strip().lower()
+    if recap_style not in ("text", "video"):
+        recap_style = "text"
+    try:
+        recap_speed = float(payload.get("recap_speed", 1.5))
+    except (TypeError, ValueError):
+        recap_speed = 1.5
+    # Clamp the speed to a sane range (0.5x..4x) so a malformed form value
+    # never produces a single-frame or unwatchably slow recap.
+    if recap_speed <= 0:
+        recap_speed = 1.0
+    recap_speed = max(0.5, min(4.0, recap_speed))
+
     # Topic hook selection: accept only values that exist in hooks.json (plus
     # "none" = off). Unknown / missing values degrade to "none" so the rest of
     # the pipeline behaves exactly as before.
@@ -122,11 +154,18 @@ def _build_config(payload: dict) -> PipelineConfig:
     llm_api_key = str(payload.get("llm_api_key", "")).strip()
     llm_base_url = str(payload.get("llm_base_url", "")).strip()
     llm_model = str(payload.get("llm_model", "")).strip()
+    llm_proxy = str(payload.get("llm_proxy", "")).strip()
     if use_llm:
+        # Fallback to config.json values when form fields are empty
+        cfg_file = _load_config_file()
+        if not llm_api_key:
+            llm_api_key = str(cfg_file.get("llm_api_key", "")).strip()
         if not llm_base_url:
-            llm_base_url = _LLM_DEFAULT_BASE_URL
+            llm_base_url = str(cfg_file.get("llm_base_url", "")).strip() or _LLM_DEFAULT_BASE_URL
         if not llm_model:
-            llm_model = _LLM_DEFAULT_MODEL
+            llm_model = str(cfg_file.get("llm_model", "")).strip() or _LLM_DEFAULT_MODEL
+        if not llm_proxy:
+            llm_proxy = str(cfg_file.get("llm_proxy", "")).strip()
 
     return PipelineConfig(
         min_topic_duration=_f("min_duration", 20.0),
@@ -142,10 +181,13 @@ def _build_config(payload: dict) -> PipelineConfig:
         recap_duration=max(1.0, _f("recap_duration", 4.0)),
         recap_voice=recap_voice,
         recap_lang=recap_lang,
+        recap_style=recap_style,
+        recap_speed=recap_speed,
         use_llm=use_llm,
         llm_base_url=llm_base_url,
         llm_api_key=llm_api_key,
         llm_model=llm_model,
+        llm_proxy=llm_proxy,
     )
 
 
@@ -466,11 +508,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not segments:
                     self._send_json({"ok": False, "error": "No usable cues found in the transcript."}, 400)
                     return
-                topics = segment_topics(segments, cfg)
+                # Pass video_path so segmentation can run audio/visual signal
+                # analysis (only effective when the LLM path runs; harmless
+                # otherwise).
+                topics = segment_topics(segments, cfg, source_video=video_path)
                 enrich_topics(topics, cfg)
                 cut_video(video_path, topics, outdir, cfg)
                 if cfg.add_recaps:
-                    add_recaps(topics, outdir, cfg)
+                    add_recaps(topics, outdir, cfg, video_path)
             except (TranscriptParseError, SegmentationError, FFmpegError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 500)
                 return

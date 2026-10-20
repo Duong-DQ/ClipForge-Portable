@@ -45,6 +45,51 @@ video-serializer <video.mp4> <transcript.srt> -o out --recaps
 - **Giọng đọc** cần `edge-tts` + mạng; nếu không có mạng / proxy chặn, nó tự **tắt giọng**
   (chỉ còn chữ), **không lỗi**.
 
+## AI (Gemini) — tạo tiêu đề + tóm tắt thông minh
+
+Tool mặc định dùng **Google Gemini API** để tạo tiêu đề và tóm tắt cho từng tập.
+Nếu không cấu hình, tool chạy **offline** (dùng heuristic, không gọi API).
+
+### Bước 1: Lấy API key miễn phí
+1. Mở https://aistudio.google.com/apikey
+2. Đăng nhập tài khoản Google
+3. Bấm **"Create API key"** → copy key (đắt dạng `AIza...`)
+
+### Bước 2: Điền vào `config.json`
+Mở file `config.json` trong thư mục `video-serializer`, điền key:
+```json
+{
+  "use_llm": true,
+  "llm_base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+  "llm_api_key": "AIza-sy-key-o-day",
+  "llm_model": "gemini-3.8-flash",
+  "llm_proxy": ""
+}
+```
+
+| Trường | Ý nghĩa | Mặc định |
+|--------|---------|----------|
+| `use_llm` | Bật/tắt AI | `true` |
+| `llm_base_url` | Endpoint API | Gemini (điền sẵn) |
+| `llm_api_key` | **API key của bạn** | (trống) |
+| `llm_model` | Model dùng | `gemini-3.8-flash` (free tier) |
+| `llm_proxy` | Proxy (nếu mạng công ty chặn) | (trống = auto-detect) |
+
+### Proxy (mạng công ty / firewall)
+Nếu máy bị proxy chặn (VD: mạng PEGATRON), điền URL proxy vào `llm_proxy`:
+```json
+"llm_proxy": "http://127.0.0.1:8899"
+```
+- **Trống** = tự detect proxy từ hệ thống (env var `HTTPS_PROXY` hoặc Windows registry).
+- **Điền explicit** = ép dùng proxy đó (override system setting).
+
+> **Lưu ý**: Trên máy PEGATRON, `generativelanguage.googleapis.com` thường bị firewall chặn.
+> Nếu không có proxy nào cho phép ra Google, cân nhắc dùng LLM nội bộ (PEGATRON MaaS) thay thế.
+
+### Kiểm tra
+Sau khi điền key, chạy Web GUI → tick **"AI (Gemini)"** → nếu key đúng, các tập sẽ có
+tiêu đề + tóm tắt do AI tạo thay vì heuristic.
+
 ## Ghi chú
 - Transcript phải là file có sẵn (SRT/VTT) — tool **không** tự nhận dạng giọng nói.
 - Hỗ trợ tiếng **Việt / Anh / Trung**. Card "nhắc lại" **tự đổi ngôn ngữ theo transcript**

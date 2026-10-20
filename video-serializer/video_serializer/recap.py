@@ -550,6 +550,348 @@ def build_intro(
 
 
 # ---------------------------------------------------------------------------
+# Video-highlight recap (alternative to the text-card intro)
+# ---------------------------------------------------------------------------
+
+def _clamp_highlight(
+    start: float, end: float, source_duration: float
+) -> "tuple[float, float] | None":
+    """Return a sanitized ``(start, end)`` pair clamped to ``source_duration``.
+
+    Returns ``None`` when the pair is degenerate (end <= start, or the
+    resulting window is shorter than 0.5s). Always returns ``start >= 0``
+    and ``end <= source_duration``. Never raises.
+    """
+    try:
+        s = float(start)
+        e = float(end)
+    except (TypeError, ValueError):
+        return None
+    if e <= s:
+        return None
+    if s < 0.0:
+        s = 0.0
+    if source_duration > 0.0 and e > source_duration:
+        e = float(source_duration)
+    if s >= e:
+        return None
+    if e - s < 0.5:
+        return None
+    return (s, e)
+
+
+def _ffmpeg_succeeded(path: str, min_bytes: int = 1024) -> bool:
+    """Return ``True`` iff ``path`` exists, is a file, and has at least ``min_bytes``."""
+    try:
+        return os.path.isfile(path) and os.path.getsize(path) >= min_bytes
+    except OSError:
+        return False
+
+
+def _run_ffmpeg(cmd: "list[str]", timeout: int = 120) -> "tuple[int, str]":
+    """Run ffmpeg and return ``(returncode, stderr_tail)``. Never raises.
+
+    Any unexpected exception (subprocess crash, timeout) is mapped to a
+    returncode of ``-1`` so callers can fall through gracefully.
+    """
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, check=False, timeout=timeout,
+        )
+        return (int(res.returncode), (res.stderr or "")[-400:])
+    except Exception as exc:  # noqa: BLE001 - never raise from a recap helper
+        return (-1, f"{type(exc).__name__}: {exc}")
+
+
+def _extract_highlight_clips(
+    source_video: str,
+    highlights: "list[tuple[float, float]]",
+    speed: float,
+    tmpdir: str,
+) -> "list[str]":
+    """Extract each ``(start, end)`` highlight from ``source_video`` into ``tmpdir``.
+
+    Returns the list of produced MP4 paths (one per highlight, in the same
+    order). Clips are sped up by ``speed`` (``setpts={1/speed}*PTS``) and
+    audio-stripped so the concat list stays video-only. Ffmpeg failures on
+    individual clips silently skip that clip (the returned list may be
+    shorter than ``highlights``).
+    """
+    produced: list[str] = []
+    speed = max(0.5, min(4.0, float(speed)))
+    speed_str = f"{1.0 / speed:.6f}".rstrip("0").rstrip(".") or "1"
+    for i, pair in enumerate(highlights):
+        try:
+            s, e = float(pair[0]), float(pair[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if e <= s:
+            continue
+        duration = e - s
+        out_path = os.path.join(tmpdir, f"hl_{i:02d}.mp4")
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", f"{s:.3f}",
+            "-i", source_video,
+            "-t", f"{duration:.3f}",
+            "-filter:v", f"setpts={speed_str}*PTS",
+            "-an",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-r", "25",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+        rc, _tail = _run_ffmpeg(cmd, timeout=60)
+        if rc == 0 and _ffmpeg_succeeded(out_path):
+            produced.append(out_path)
+    return produced
+
+
+def _concat_clips(
+    clip_paths: "list[str]", out_path: str, tmpdir: str,
+) -> bool:
+    """Concat ``clip_paths`` (in order) into ``out_path`` using the demuxer.
+
+    Returns ``True`` on success, ``False`` on any failure. The temp list file
+    is always cleaned up. Tries the demuxer first, falls back to the concat
+    *filter* (re-encode) so even mixed-format clips work.
+    """
+    if not clip_paths:
+        return False
+    fd, listfile = tempfile.mkstemp(suffix=".txt", prefix="recap_hl_list_")
+    os.close(fd)
+    try:
+        with open(listfile, "w", encoding="utf-8") as fh:
+            for path in clip_paths:
+                fh.write(_concat_listfile_line(path) + "\n")
+        cmd = [
+            "ffmpeg", "-y",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", listfile,
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+        rc, _tail = _run_ffmpeg(cmd, timeout=120)
+        if rc == 0 and _ffmpeg_succeeded(out_path):
+            return True
+        # Fallback: concat filter (re-encode). The listfile is already in the
+        # correct format, but the filter needs all inputs separately.
+        cmd2 = [
+            "ffmpeg", "-y",
+            *sum((["-i", p] for p in clip_paths), []),
+            "-filter_complex",
+            "".join(f"[{i}:v]" for i in range(len(clip_paths)))
+            + f"concat=n={len(clip_paths)}:v=1:a=0[v]",
+            "-map", "[v]",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-an",
+            "-movflags", "+faststart",
+            out_path,
+        ]
+        rc2, _tail2 = _run_ffmpeg(cmd2, timeout=120)
+        return rc2 == 0 and _ffmpeg_succeeded(out_path)
+    except Exception:  # noqa: BLE001 - never raise from concat helper
+        return False
+    finally:
+        try:
+            os.remove(listfile)
+        except OSError:
+            pass
+
+
+def _overlay_audio(
+    video_loop_path: str, audio_path: "Optional[str]", out_path: str,
+    sample_rate: int, channels: int, total_duration: float,
+) -> bool:
+    """Mux ``video_loop_path`` with optional ``audio_path`` into ``out_path``.
+
+    The video is looped (``-stream_loop -1``) to cover ``total_duration``
+    seconds, then cut to that length with ``-t``. When ``audio_path`` is
+    ``None`` (TTS unavailable) the output carries silent audio of the same
+    duration so the subsequent concat still has a clean audio stream.
+    Returns ``True`` on success, ``False`` on any failure.
+    """
+    total_duration = max(0.5, float(total_duration))
+    inputs: list[str]
+    audio_args: list[str]
+    if audio_path:
+        inputs = ["-stream_loop", "-1", "-i", video_loop_path, "-i", audio_path]
+        audio_args = [
+            "-map", "0:v",
+            "-map", "1:a",
+            "-c:a", "aac",
+            "-ar", str(sample_rate),
+            "-ac", str(channels),
+            "-b:a", "192k",
+            "-shortest",
+        ]
+    else:
+        inputs = [
+            "-stream_loop", "-1", "-i", video_loop_path,
+            "-f", "lavfi",
+            "-i", f"anullsrc=r={sample_rate}:cl={channels}",
+        ]
+        audio_args = [
+            "-map", "0:v",
+            "-map", "1:a",
+            "-c:a", "aac",
+            "-ar", str(sample_rate),
+            "-ac", str(channels),
+            "-b:a", "192k",
+            "-shortest",
+        ]
+    cmd = [
+        "ffmpeg", "-y",
+        *inputs,
+        "-map", "0:v",
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-r", "25",
+        *audio_args,
+        "-t", f"{total_duration:.3f}",
+        "-movflags", "+faststart",
+        out_path,
+    ]
+    rc, _tail = _run_ffmpeg(cmd, timeout=120)
+    return rc == 0 and _ffmpeg_succeeded(out_path)
+
+
+def build_video_intro(
+    source_video: str,
+    topic: "Topic",
+    highlights: "list[tuple[float, float]]",
+    tts_text: str,
+    config: "PipelineConfig",
+    out_path: str,
+) -> bool:
+    """Build a video-highlight recap intro into ``out_path``.
+
+    Returns ``True`` on success, ``False`` on any failure. Never raises.
+
+    The pipeline:
+
+    1. Each ``(start, end)`` in ``highlights`` (2-3 entries expected, 3-5s
+       each) is extracted from ``source_video`` at ``config.recap_speed``
+       (``setpts=PTS/speed``) and audio-stripped.
+    2. The per-clip MP4s are concatenated (concat demuxer, falling back to
+       the concat filter on mixed-format input).
+    3. A TTS voice-over is generated from ``tts_text`` via edge-tts
+       (graceful fallback to silent audio when TTS is unavailable).
+    4. The concatenated highlight reel is ``-stream_loop -1``'d to cover
+       the TTS duration (+0.5s safety) and muxed with the audio into
+       ``out_path`` -- the final intro MP4 that ``prepend_intro`` will
+       concatenate with the next clip.
+
+    On any failure (missing source, ffmpeg error, empty highlights after
+    clamping, degenerate pairs) returns ``False`` so the caller can fall
+    back to the text-card intro. ``topic`` is reserved for future
+    per-topic customisation; currently unused.
+    """
+    if not source_video or not os.path.exists(source_video):
+        return False
+    if not highlights:
+        return False
+
+    # Resolve total source duration so we can clamp highlights safely.
+    src_duration = _probe_duration(source_video)
+
+    # Sanitize highlights and keep at most 3 entries (per the LLM prompt's
+    # "2-3 pairs" instruction -- anything more bloats the recap).
+    clean: list[tuple[float, float]] = []
+    for pair in highlights:
+        clamped = _clamp_highlight(pair[0], pair[1], src_duration)
+        if clamped is not None:
+            clean.append(clamped)
+        if len(clean) >= 3:
+            break
+    if not clean:
+        return False
+
+    # Use the same tmpdir layout as ``add_recaps`` (caller passes one in via
+    # the parent stack) -- but for cleanliness we mint our own.
+    workdir = tempfile.mkdtemp(prefix="recap_video_intro_")
+    try:
+        clips = _extract_highlight_clips(
+            source_video, clean, config.recap_speed, workdir,
+        )
+        if not clips:
+            return False
+
+        concat_path = os.path.join(workdir, "highlights_concat.mp4")
+        if not _concat_clips(clips, concat_path, workdir):
+            return False
+
+        # TTS: best-effort, silent fallback. The audio length drives the
+        # final intro length.
+        lang = _resolve_lang(topic, config)
+        voice = config.recap_voice or _VOICE_BY_LANG.get(lang, _VOICE_BY_LANG["en"])
+        fd, mp3_path = tempfile.mkstemp(suffix=".mp3", prefix="recap_video_tts_")
+        os.close(fd)
+        os.remove(mp3_path)  # let edge-tts create the file
+        try:
+            tts_out, tts_duration = generate_tts(
+                tts_text, mp3_path, voice=voice,
+            )
+        except Exception:
+            tts_out, tts_duration = (None, 0.0)
+
+        # Audio parameters matching the source clip so the subsequent concat
+        # downstream stays clean. Fall back to safe defaults if probe fails.
+        info = {"sample_rate": 44100, "channels": 2}
+        try:
+            # Probe the *source* video (not the concat) so the recap picks up
+            # the same audio format as the clips it will be prepended to.
+            from .cutter import ensure_ffmpeg  # local import keeps module clean
+            ensure_ffmpeg()
+            probed = probe_clip(source_video)
+            info["sample_rate"] = int(probed.get("sample_rate", 44100))
+            info["channels"] = int(probed.get("channels", 2))
+        except Exception:
+            pass
+
+        # Final intro duration: TTS length with a tiny safety pad, floored
+        # at the configured ``recap_duration`` (so a 1-second TTS still
+        # produces a non-trivial intro) and at 1.0s as an absolute minimum.
+        intro_dur = max(
+            1.0,
+            float(config.recap_duration),
+            (tts_duration if tts_duration > 0 else 0.0) + 0.5,
+        )
+
+        ok = _overlay_audio(
+            video_loop_path=concat_path,
+            audio_path=tts_out,
+            out_path=out_path,
+            sample_rate=info["sample_rate"],
+            channels=info["channels"],
+            total_duration=intro_dur,
+        )
+        return ok and _ffmpeg_succeeded(out_path)
+    except Exception as exc:  # noqa: BLE001 - never raise from the public API
+        print(
+            f"[recap] video intro build failed: {_short_reason(exc)}",
+            file=sys.stderr,
+        )
+        return False
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
 # Concatenation
 # ---------------------------------------------------------------------------
 
@@ -707,7 +1049,12 @@ def _llm_teaser_text(prev: "Topic", config: "PipelineConfig") -> "Optional[str]"
 # Pipeline stage
 # ---------------------------------------------------------------------------
 
-def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -> None:
+def add_recaps(
+    topics: List[Topic],
+    output_dir: str,
+    config: "PipelineConfig",
+    source_video: "Optional[str]" = None,
+) -> None:
     """Prepend a recap intro to every clip from the second onward, in place.
 
     For each topic ``i`` in ``1..len-1`` (0-based; episode ``i + 1``), an intro
@@ -726,6 +1073,16 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
     via :func:`build_intro`'s ``header_override`` / ``body_override`` knobs.
     When the topic has no teasers (or the topic is ``"none"``) the existing
     neutral recap is used -- byte-identical to the original behaviour.
+
+    Video-highlight recaps
+    ----------------------
+    When ``config.recap_style == "video"`` AND ``source_video`` is provided
+    AND the previous topic has stored highlight timestamps, the recap is
+    built from a 2-3-clip highlight reel of the previous episode with a TTS
+    voice-over (:func:`build_video_intro`) instead of the text card. When
+    any of those conditions is missing, the function silently falls back to
+    the text-card path so callers never see a degraded experience for a
+    missing feature.
     """
     if not config.add_recaps:
         return
@@ -743,6 +1100,10 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
             pick_teaser = _pick_teaser
         except Exception:  # noqa: BLE001 - missing hooks.json must never crash the pipeline
             pick_teaser = None
+
+    recap_style = str(getattr(config, "recap_style", "text") or "text").strip().lower()
+    if recap_style not in ("text", "video"):
+        recap_style = "text"
 
     try:
         for i in range(1, len(topics)):
@@ -781,20 +1142,55 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
 
             intro = os.path.join(tmpdir, "intro_ep%02d.mp4" % ep)
             final = os.path.join(tmpdir, "final_ep%02d.mp4" % ep)
+            intro_path: "Optional[str]" = None
+            intro_dur = 0.0
+            used_style = recap_style
             try:
-                intro_path, intro_dur = build_intro(
-                    prev, prev_index_1based, clip.file, intro, config,
-                    header_override=teaser_header,
-                    body_override=teaser_body,
+                # Decide which intro path to take. Video-style needs (a) the
+                # user opted in, (b) the source video is reachable, AND (c)
+                # the previous topic has at least one valid highlight. If
+                # any of those is missing we fall back to the text card so
+                # the recap is never dropped entirely.
+                can_video = (
+                    recap_style == "video"
+                    and source_video
+                    and os.path.exists(source_video)
+                    and prev.highlights
                 )
+                if can_video:
+                    tts_text = teaser_body or make_recap_text(
+                        prev, prev_index_1based, lang=_resolve_lang(prev, config)
+                    )
+                    video_intro_path = os.path.join(
+                        tmpdir, "video_intro_ep%02d.mp4" % ep,
+                    )
+                    if build_video_intro(
+                        source_video=source_video,
+                        topic=prev,
+                        highlights=list(prev.highlights),
+                        tts_text=tts_text,
+                        config=config,
+                        out_path=video_intro_path,
+                    ):
+                        intro_path = video_intro_path
+                        intro_dur = _probe_duration(video_intro_path) or max(
+                            1.0, float(config.recap_duration),
+                        )
+                if intro_path is None:
+                    intro_path, intro_dur = build_intro(
+                        prev, prev_index_1based, clip.file, intro, config,
+                        header_override=teaser_header,
+                        body_override=teaser_body,
+                    )
+                    used_style = "text"
                 prepend_intro(clip.file, intro_path, final)
                 # Replace the clip in place (keep its nice filename).
                 os.replace(final, clip.file)
                 clip.intro_seconds = float(intro_dur)
                 if teaser_body:
                     print(
-                        "[recap] prepended teaser intro to episode %d "
-                        "(source=%s, ~%.1fs)" % (ep, teaser_source, intro_dur)
+                        "[recap] prepended %s intro to episode %d "
+                        "(source=%s, ~%.1fs)" % (used_style, ep, teaser_source, intro_dur)
                     )
                 else:
                     print(
@@ -807,9 +1203,14 @@ def add_recaps(topics: List[Topic], output_dir: str, config: "PipelineConfig") -
                     "(left unchanged)" % (ep, exc)
                 )
             finally:
-                for f in (intro, final):
+                for f in (
+                    intro,
+                    final,
+                    os.path.join(tmpdir, "video_intro_ep%02d.mp4" % ep),
+                ):
                     try:
-                        os.remove(f)
+                        if os.path.exists(f):
+                            os.remove(f)
                     except OSError:
                         pass
     finally:

@@ -25,7 +25,7 @@ lazily, and only when the embedding backend is actually used.
 from __future__ import annotations
 
 import re
-from typing import List, Set
+from typing import List, Optional, Set, Tuple
 
 from .llm import chat_json, is_configured
 from .models import PipelineConfig, Topic, TranscriptSegment
@@ -462,29 +462,180 @@ def _enforce_max(
 # --------------------------------------------------------------------------- #
 # LLM cut-point path (opt-in, degrades gracefully to the offline backends)
 # --------------------------------------------------------------------------- #
+_MAX_SIGNAL_TIMES = 12  # how many of each signal to inline in the LLM prompt
+
+
+def _format_signals(
+    source_video: "Optional[str]",
+) -> "tuple[str, list[tuple[float, float]]]":
+    """Return ``(signals_text, highlights_seed)`` for ``source_video``.
+
+    Runs the audio/visual analyzers (ffmpeg-backed) and produces a compact
+    human-readable summary suitable for inclusion in the LLM prompt:
+
+    - Scene cuts at: 12.50s, 34.20s, ...
+    - Energy peaks at: 15.05s, 42.30s, ...
+
+    Returns ``("", [])`` when no source video is provided or when both
+    analyzers fail (graceful degradation). ``highlights_seed`` is a list of
+    ``(start, end)`` pairs computed from the energy peaks (3s windows around
+    each peak, padded/clamped to the cut-point extent) -- used as a fallback
+    when the LLM is not asked for highlights, or as a sanity-default when it
+    returns an empty list.
+    """
+    if not source_video:
+        return ("", [])
+    try:
+        from . import analysis  # local import keeps module load dependency-free
+    except Exception:  # noqa: BLE001 - analysis is purely optional at this stage
+        return ("", [])
+
+    lines: list[str] = []
+    highlights_seed: list[tuple[float, float]] = []
+
+    try:
+        cuts = analysis.scene_cuts(source_video, threshold=0.30) or []
+    except Exception:
+        cuts = []
+    if cuts:
+        cuts_sorted = sorted(cuts, key=lambda c: float(c.get("t", 0.0)))
+        ts = ", ".join(f"{float(c['t']):.2f}s" for c in cuts_sorted[:_MAX_SIGNAL_TIMES])
+        lines.append(f"Scene cuts at: {ts}")
+
+    try:
+        env = analysis.audio_energy_envelope(source_video, hop_sec=0.05) or []
+    except Exception:
+        env = []
+    if env:
+        times = [float(t) for t, _ in env]
+        energy = [float(e) for _, e in env]
+        peaks = analysis.beat_peaks(times, energy)
+        if peaks:
+            ts = ", ".join(f"{p:.2f}s" for p in peaks[:_MAX_SIGNAL_TIMES])
+            lines.append(f"Energy peaks at: {ts}")
+            # Seed: 3s window centred on each peak (clamped to non-negative).
+            for p in peaks[:6]:
+                start = max(0.0, p - 1.5)
+                end = p + 1.5
+                highlights_seed.append((start, end))
+
+    return ("\n".join(lines), highlights_seed)
+
+
+def _validate_highlights(
+    raw: object, cuts: List[int], segments: List[TranscriptSegment]
+) -> List[Tuple[float, float]]:
+    """Coerce ``raw`` into a list of ``(start, end)`` floats aligned with ``cuts``.
+
+    Accepts either a flat list ``[[s, e], [s, e], ...]`` (one per cut) or a
+    single pair ``[s, e]`` broadcast across all cuts. Out-of-range entries
+    are clamped to the corresponding cut's segment range; malformed pairs
+    are dropped. Returns an empty list on any structural failure.
+    """
+    if not cuts:
+        return []
+    n_segments = len(segments)
+    if n_segments == 0:
+        return []
+    # Compute (region_start, region_end) for each cut: the time window whose
+    # "most dramatic moments" the highlights should be picked from.
+    region_bounds: list[tuple[float, float]] = []
+    prev_idx = 0
+    for cut in cuts:
+        region_start = segments[prev_idx].start
+        region_end = segments[cut].end
+        region_bounds.append((region_start, region_end))
+        prev_idx = cut + 1
+
+    out: list[tuple[float, float]] = []
+    pairs_input: list = []
+    if isinstance(raw, list):
+        if len(raw) == 2 and all(isinstance(x, (int, float)) for x in raw):
+            # Broadcast a single [s, e] to every cut.
+            for _ in cuts:
+                pairs_input.append(list(raw))
+        else:
+            for item in raw:
+                if isinstance(item, (list, tuple)) and len(item) == 2:
+                    pairs_input.append(list(item))
+                else:
+                    pairs_input.append(None)  # placeholder; will be skipped
+    elif isinstance(raw, dict) and isinstance(raw.get("highlights"), list):
+        # Tolerate the model wrapping the array under "highlights" too.
+        return _validate_highlights(raw["highlights"], cuts, segments)
+
+    for i, (region_start, region_end) in enumerate(region_bounds):
+        if i >= len(pairs_input):
+            break
+        pair = pairs_input[i]
+        if pair is None:
+            continue
+        try:
+            s = float(pair[0])
+            e = float(pair[1])
+        except (TypeError, ValueError, IndexError):
+            continue
+        if e <= s:
+            continue
+        # Clamp into the region's actual time range (and never negative).
+        if s < region_start:
+            s = region_start
+        if e > region_end:
+            e = region_end
+        if e - s < 0.5:
+            continue  # pair is too short to be useful
+        out.append((s, e))
+
+    return out
+
+
 def _llm_cut_points(
-    segments: List[TranscriptSegment], config: PipelineConfig
-) -> "list[int] | None":
+    segments: List[TranscriptSegment],
+    config: PipelineConfig,
+    source_video: "Optional[str]" = None,
+) -> "tuple[list[int] | None, list[tuple[float, float]] | None]":
     """Ask the LLM to choose content-driven cut indices; ``None`` on any failure.
 
     Builds a compact transcript (per segment: ``i\\tstart-end\\ttext``), asks the
     model to split into ~3-5 min clips that end at real topic/narrative changes
     or hook/question/cliffhanger endings, and parses a strict JSON
-    ``{"cuts": [c1, c2, ...]}`` response where each ``ci`` is the 0-based index
-    of the LAST segment of that clip.
+    ``{"cuts": [c1, c2, ...], "highlights": [[s, e], ...]}`` response where:
 
-    Returns the validated list (strictly increasing, in ``[0, n)``) on success,
-    ``None`` otherwise. Never raises -- every error path returns ``None``.
+    - each ``ci`` is the 0-based index of the LAST segment of clip ``i``.
+    - ``highlights[i]`` is a ``[start_sec, end_sec]`` pair of the most
+      dramatic 3-5s moment **inside** the region covered by clip ``i`` (used
+      by the video-style recap stage to assemble a video-highlight intro from
+      the previous clip). The highlights array has the same length as ``cuts``
+      (one entry per cut); the last clip has no preceding cut and therefore
+      receives no recap, but the highlights array still covers every cut.
+
+    When ``source_video`` is provided, the prompt is enriched with audio/
+    visual signals (scene cuts + energy peaks) extracted via
+    :mod:`video_serializer.analysis`. Signal extraction failures are silent:
+    the prompt just omits that section.
+
+    Returns the validated ``(cuts, highlights)`` tuple on success,
+    ``(None, None)`` otherwise. Never raises -- every error path returns the
+    failure tuple.
     """
     n = len(segments)
     if n == 0:
-        return None
+        return (None, None)
 
     lines: list[str] = []
     for seg in segments:
         text = (seg.text or "").replace("\t", " ").replace("\n", " ").strip()
         lines.append(f"{seg.index}\t{seg.start:.2f}-{seg.end:.2f}\t{text}")
     transcript = "\n".join(lines)
+
+    signals_text, _seed = _format_signals(source_video)
+    signals_section = ""
+    if signals_text:
+        signals_section = (
+            "\nAUDIO/VISUAL SIGNALS (from ffmpeg analysis of the source video):\n"
+            + signals_text
+            + "\n"
+        )
 
     system = "You split video transcripts into short-form clips and return strict JSON only."
     user = (
@@ -495,16 +646,24 @@ def _llm_cut_points(
         "hook / question / cliffhanger endings.\n"
         "  - 'cuts' is the list of 0-based indices of the LAST segment of each "
         "clip. The final clip ends at the last segment automatically.\n"
-        "Return STRICT JSON of the form: {\"cuts\": [c1, c2, ...]} and nothing else.\n\n"
+        + signals_section
+        + "In your response, ALSO include a 'highlights' array of the form "
+        "\"highlights\": [[start_sec, end_sec], ...] with one [start, end] pair "
+        "per cut (each 3-5 seconds long), covering the most dramatic moment "
+        "inside that clip's region. Use the audio/visual signals above as a "
+        "hint when picking the moments.\n"
+        "Return STRICT JSON of the form: "
+        "{\"cuts\": [c1, c2, ...], \"highlights\": [[s1, e1], [s2, e2], ...]} "
+        "and nothing else.\n\n"
         "Transcript:\n" + transcript
     )
 
-    obj = chat_json(config, system, user, temperature=0.0, max_tokens=400)
+    obj = chat_json(config, system, user, temperature=0.0, max_tokens=600)
     if not isinstance(obj, dict):
-        return None
+        return (None, None)
     raw_cuts = obj.get("cuts")
     if not isinstance(raw_cuts, list):
-        return None
+        return (None, None)
 
     validated: list[int] = []
     last = -1
@@ -523,7 +682,15 @@ def _llm_cut_points(
         validated.append(value)
         last = value
 
-    return validated if validated else None
+    if not validated:
+        return (None, None)
+
+    # Highlights are optional but desirable; missing/garbage highlights
+    # don't fail the whole call -- the offline path in ``add_recaps`` will
+    # degrade to the text card.
+    raw_highlights = obj.get("highlights")
+    highlights = _validate_highlights(raw_highlights, validated, segments)
+    return (validated, highlights)
 
 
 def _groups_from_cuts(cuts: List[int], n: int) -> List[List[int]]:
@@ -557,8 +724,41 @@ def _groups_from_cuts(cuts: List[int], n: int) -> List[List[int]]:
 # --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
+def _attach_highlights(
+    topics: List[Topic],
+    highlights: "Optional[List[Tuple[float, float]]]",
+    segments: List[TranscriptSegment],
+) -> None:
+    """Copy ``highlights`` (one entry per cut) onto ``topics`` in place.
+
+    ``highlights[i]`` describes the dramatic moment inside the time region
+    covered by ``topics[i]`` (which ends at the i-th cut). When the lists do
+    not line up -- fewer highlights than topics, or the LLM returned none --
+    the tail of topics keeps an empty ``highlights`` list. Out-of-range
+    highlights are silently dropped.
+    """
+    if not topics or not highlights:
+        return
+    for index, topic in enumerate(topics):
+        if index >= len(highlights):
+            break
+        start, end = highlights[index]
+        # Final safety net: clamp into the topic's actual time range and drop
+        # degenerate pairs. ``enforce_min`` / ``enforce_max`` may have shifted
+        # the topic bounds slightly after the LLM call.
+        if start < topic.start:
+            start = float(topic.start)
+        if end > topic.end:
+            end = float(topic.end)
+        if end - start < 0.5:
+            continue
+        topic.highlights = [(float(start), float(end))]
+
+
 def segment_topics(
-    segments: List[TranscriptSegment], config: PipelineConfig
+    segments: List[TranscriptSegment],
+    config: PipelineConfig,
+    source_video: "Optional[str]" = None,
 ) -> List[Topic]:
     """Group ``segments`` into time-ordered :class:`Topic` objects.
 
@@ -569,13 +769,22 @@ def segment_topics(
     config:
         Pipeline tunables; ``use_embeddings`` selects the backend and the
         duration/similarity thresholds drive boundary and merge decisions.
+    source_video:
+        Optional path to the original video file. When provided AND the LLM
+        backend is selected, the LLM prompt is enriched with audio/visual
+        signals extracted via :mod:`video_serializer.analysis` and the
+        returned highlights are attached to the produced topics for the
+        video-style recap stage. Always safe to omit (falls back to no
+        signals, no highlights).
 
     Returns
     -------
     List[Topic]
         Topics in time order with ``index`` ``0..N-1``, ``segments`` populated,
         and ``start``/``end`` set from the first/last segment. ``title``,
-        ``summary`` and ``file`` are left empty for later pipeline stages.
+        ``summary``, ``file``, and ``highlights`` are left empty for later
+        pipeline stages (highlights only populated when the LLM path ran
+        with a ``source_video`` AND the model returned valid highlights).
 
     Raises
     ------
@@ -590,17 +799,19 @@ def segment_topics(
     # Any failure (LLM disabled, no key, call failed, malformed response) falls
     # through to the offline backends below so the pipeline never crashes.
     if is_configured(config):
-        cuts = _llm_cut_points(segments, config)
+        cuts, highlights = _llm_cut_points(segments, config, source_video)
         if cuts:
             groups = _groups_from_cuts(cuts, len(segments))
             if groups:
                 groups = _enforce_min(groups, segments, config)
                 groups = _enforce_max(groups, segments, config)
+                topics = _build_topics(groups, segments)
+                _attach_highlights(topics, highlights, segments)
                 print(
-                    "[segmentation] using LLM cut points: %d clip(s)"
-                    % len(_groups_from_cuts(cuts, len(segments)))
+                    "[segmentation] using LLM cut points: %d clip(s), "
+                    "%d highlight(s)" % (len(groups), len(highlights or []))
                 )
-                return _build_topics(groups, segments)
+                return topics
 
     # Retention strategy overrides similarity/embedding grouping entirely: cuts
     # are placed where the heuristic hook score is highest, then re-checked

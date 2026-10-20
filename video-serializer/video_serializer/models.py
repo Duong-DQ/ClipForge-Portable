@@ -62,6 +62,12 @@ class Topic:
     summary: str = ""
     file: str = ""
     intro_seconds: float = 0.0
+    # ``highlights`` are (start_sec, end_sec) timestamps of dramatic moments
+    # inside this topic, picked by the LLM during segmentation (using the
+    # audio/visual signals from ``analysis.py``). Consumed by the video-style
+    # recap stage to assemble a video-highlight intro from the previous clip.
+    # Empty list when the LLM did not run or returned no highlights.
+    highlights: List["tuple[float, float]"] = field(default_factory=list)
 
     @property
     def duration(self) -> float:
@@ -124,6 +130,17 @@ class PipelineConfig:
     recap_lang:
         Language for the recap intro card labels (header + "Episode N:").
         "auto" (default) detects it from the transcript; or force "vi"/"en"/"zh".
+    recap_style:
+        ``"text"`` (default) renders a drawtext-on-solid-color intro card with
+        optional TTS voice-over (the original behaviour).
+        ``"video"`` builds a short recap *video* by extracting 2-3 highlight
+        clips (picked by the LLM during segmentation) from the previous
+        episode and looping them under a TTS voice-over. Falls back to the
+        text card when no highlights are available.
+    recap_speed:
+        Speed multiplier applied to each highlight clip before concatenation
+        in video-style recaps (``1.0`` = real-time, ``1.5`` = 50% faster so
+        each 4s clip takes ~2.7s on screen). Ignored for ``recap_style="text"``.
 
     Enrichment / optional LLM
     -------------------------
@@ -162,12 +179,15 @@ class PipelineConfig:
     recap_duration: float = 4.0
     recap_voice: str = ""  # empty = auto-pick a voice matching the recap language
     recap_lang: str = "auto"  # recap card labels: auto / vi / en / zh
+    recap_style: str = "text"  # "text" = drawtext card (default); "video" = highlight clips + TTS
+    recap_speed: float = 1.5  # highlight-clip speed multiplier (video-style recap only)
 
     # --- enrichment / optional LLM ---
     use_llm: bool = False
     llm_base_url: str = ""
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
+    llm_proxy: str = ""  # explicit proxy URL (e.g. "http://127.0.0.1:8899"); empty = auto-detect
 
     # --- output ---
     metadata_format: str = "json"

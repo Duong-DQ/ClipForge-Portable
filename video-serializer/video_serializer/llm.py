@@ -16,6 +16,7 @@ Design constraints
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import urllib.error
@@ -35,6 +36,24 @@ def _mask_key(api_key: str) -> str:
         return ""
     head = api_key[:6]
     return f"{head}..."
+
+
+def _build_opener(config) -> urllib.request.OpenerDirector:
+    """Build an opener that respects explicit proxy config or system defaults.
+
+    Priority:
+    1. ``config.llm_proxy`` — explicit proxy URL (e.g. ``http://127.0.0.1:8899``)
+    2. ``HTTPS_PROXY`` / ``HTTP_PROXY`` env vars
+    3. Windows system proxy (registry) — auto-detected by ProxyHandler()
+    """
+    proxy = (getattr(config, "llm_proxy", "") or "").strip()
+    if proxy:
+        proxies = {"http": proxy, "https": proxy}
+    else:
+        # Let ProxyHandler auto-detect from env vars / OS registry
+        proxies = None
+    handler = urllib.request.ProxyHandler(proxies) if proxies else urllib.request.ProxyHandler()
+    return urllib.request.build_opener(handler)
 
 
 def is_configured(config) -> bool:
@@ -108,7 +127,8 @@ def chat(config, system: str, user: str, temperature: float = 0.0,
     masked = _mask_key(api_key)
     try:
         request = _build_request(config, system, user, temperature, max_tokens)
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        opener = _build_opener(config)
+        with opener.open(request, timeout=timeout) as response:
             payload = response.read().decode("utf-8", "replace")
         parsed = json.loads(payload)
         content = parsed["choices"][0]["message"]["content"]
