@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Result - Subtitle Rewriter</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <a href="/" class="back-link">&larr; Quay lại</a>
+            <h1>Kết quả</h1>
+        </header>
+
+        {% if job.status == 'done' %}
+        <section class="result-section">
+            <div class="result-meta">
+                <p><strong>Video:</strong> {{ job.video_filename.split('_', 1)[-1] if '_' in job.video_filename else job.video_filename }}</p>
+                <p><strong>SRT gốc:</strong> {{ job.srt_filename }}</p>
+                <p><strong>Hoàn thành:</strong> {{ job.updated_at.strftime('%Y-%m-%d %H:%M:%S') if job.updated_at else '' }}</p>
+            </div>
+
+            <div class="srt-preview">
+                <pre id="srt-content"></pre>
+            </div>
+
+            <div class="result-actions">
+                <a href="/api/jobs/{{ job.id }}/download" class="btn btn-download">&#8681; Tải xuống SRT</a>
+                <button id="copy-btn" class="btn btn-copy">Copy</button>
+            </div>
+        </section>
+        {% elif job.status == 'failed' %}
+        <section class="error-section">
+            <h2>&#9888; Lỗi</h2>
+            <p class="error-msg">{{ job.error }}</p>
+        </section>
+        {% else %}
+        <section class="pending-section">
+            <div class="spinner"></div>
+            <p>Đang xử lý: {{ job.status }}</p>
+        </section>
+        {% endif %}
+    </div>
+
+    <script>
+        {% if job.status == 'done' and job.result_srt %}
+        document.getElementById('srt-content').textContent = {{ job.result_srt | tojson }};
+
+        document.getElementById('copy-btn').addEventListener('click', function() {
+            navigator.clipboard.writeText({{ job.result_srt | tojson }});
+            this.textContent = 'Đã copy!';
+            setTimeout(() => this.textContent = 'Copy', 2000);
+        });
+        {% endif %}
+
+        {% if job.status not in ['done', 'failed'] %}
+        setInterval(async () => {
+            const res = await fetch('/api/jobs/{{ job.id }}/status');
+            const data = await res.json();
+            if (data.status === 'done' || data.status === 'failed') location.reload();
+        }, 3000);
+        {% endif %}
+    </script>
+</body>
+</html>

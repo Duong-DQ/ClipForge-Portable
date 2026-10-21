@@ -1,0 +1,33 @@
+﻿=== SUBTITLE REWRITER - HƯỚNG DẪN CHẠY ===
+
+Bước 1: Cài Python (nếu chưa có)
+  - Tải tại: https://www.python.org/downloads/
+  - Khi cài, BẮT BUỘC tick "Add Python to PATH"
+
+Bước 2: Cài dependencies
+  - Mở File Explorer, vào thư mục subtitle-rewriter
+  - Click vào address bar (dòng đường trên)
+  - Gõ: cmd  rồi nhấn Enter
+  - Trong cửa sổ CMD vừa mở, gõ:
+      pip install -r requirements.txt
+  - Chờ xong (tải flask, google-genai, ...)
+
+Bước 3: Chạy ứng dụng
+  - Double-click file: Start.bat
+  - Browser sẽ tự mở tại http://localhost:5000
+
+Bước 4: Sử dụng
+  1. Dán Gemini API key (lấy tại: https://aistudio.google.com/apikey)
+  2. (Tuỳ chọn) Gõ yêu cầu xử lý vào ô "Yêu cầu xử lý"
+  3. Upload file video (MP4, MKV, MOV...)
+  4. Upload file SRT (phụ đề)
+  5. Click "Phân tích Video"
+  6. Chờ xử lý (video càng lâu thì càng lâu)
+  7. Click "Xem kết quả" khi xong
+  8. Tải file SRT mới về
+
+LƯU Ý:
+  - Máy phải kết nối internet được với Gemini API (không bị proxy chặn)
+  - Video free tier: tối đa 2GB
+  - Video dài nhất xử lý được: ~3 giờ (low resolution)
+  - API key KHÔNG được lưu, nhập lại mỗi lần chạy

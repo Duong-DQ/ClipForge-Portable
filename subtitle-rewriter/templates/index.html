@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Subtitle Rewriter</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Subtitle Rewriter</h1>
+            <p class="subtitle">Upload video + SRT &rarr; Gemini rewrites subtitles as storytelling narration</p>
+        </header>
+
+        <section class="upload-section">
+            <div class="api-key-section">
+                <label for="api-key-input">Gemini API Key</label>
+                <input type="password" id="api-key-input" placeholder="Dán API key vào đây (AIza...)" autocomplete="off">
+            </div>
+
+            <div class="prompt-section">
+                <label for="prompt-input">Yêu cầu xử lý (optional)</label>
+                <textarea id="prompt-input" rows="3" placeholder="VD: Viết lại phụ đề theo phong cách review phim, giọng văn hài hước, nhấn mạnh cảnh hành động..."></textarea>
+                <small>Nếu để trống sẽ dùng prompt mặc định (viết lại theo storytelling narration)</small>
+            </div>
+
+            <div class="upload-box" id="video-box">
+                <input type="file" id="video-input" accept="video/*" hidden>
+                <div class="upload-placeholder" id="video-placeholder">
+                    <span class="icon">&#127916;</span>
+                    <span>Chọn video</span>
+                    <small>MP4, MOV, MKV (tối đa 3GB)</small>
+                </div>
+                <div class="upload-selected" id="video-selected" hidden>
+                    <span id="video-name"></span>
+                    <span class="file-size" id="video-size"></span>
+                </div>
+            </div>
+
+            <div class="upload-box" id="srt-box">
+                <input type="file" id="srt-input" accept=".srt" hidden>
+                <div class="upload-placeholder" id="srt-placeholder">
+                    <span class="icon">&#128220;</span>
+                    <span>Chọn file SRT</span>
+                    <small>File phụ đề .srt</small>
+                </div>
+                <div class="upload-selected" id="srt-selected" hidden>
+                    <span id="srt-name"></span>
+                </div>
+            </div>
+
+            <button id="analyze-btn" disabled>Phân tích video</button>
+            <div id="progress" class="progress" hidden>
+                <div class="spinner"></div>
+                <span id="progress-text">Đang xử lý...</span>
+            </div>
+        </section>
+
+        <section class="jobs-section">
+            <h2>Lịch sử</h2>
+            <div id="jobs-list">
+                {% for job in jobs %}
+                <div class="job-item" data-id="{{ job.id }}">
+                    <div class="job-info">
+                        <span class="job-name">{{ job.srt_filename }}</span>
+                        <span class="job-date">{{ job.created_at.strftime('%Y-%m-%d %H:%M') if job.created_at else '' }}</span>
+                    </div>
+                    <div class="job-status">
+                        {% if job.status == 'done' %}
+                            <a href="/jobs/{{ job.id }}" class="btn btn-view">Xem kết quả</a>
+                        {% elif job.status == 'failed' %}
+                            <span class="status-failed" title="{{ job.error }}">Lỗi</span>
+                        {% else %}
+                            <span class="status-pending">{{ job.status }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
