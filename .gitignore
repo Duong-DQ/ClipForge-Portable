@@ -5,3 +5,6 @@
 # Local config (may contain LLM API keys)
 video-serializer/config.json
 
+# Flask-SQLAlchemy runtime data
+subtitle-rewriter/instance/
+

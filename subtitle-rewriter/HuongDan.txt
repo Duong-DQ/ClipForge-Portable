@@ -1,33 +1,37 @@
 ﻿=== SUBTITLE REWRITER - HƯỚNG DẪN CHẠY ===
 
-Bước 1: Cài Python (nếu chưa có)
-  - Tải tại: https://www.python.org/downloads/
-  - Khi cài, BẮT BUỘC tick "Add Python to PATH"
+YÊU CẦU:
+  - Python 3.10+ (cài tại https://www.python.org/downloads/)
+  - BẮT BUỘC tick "Add Python to PATH" khi cài Python
+  - Internet (máy phải truy cập được generativelanguage.googleapis.com)
 
-Bước 2: Cài dependencies
-  - Mở File Explorer, vào thư mục subtitle-rewriter
-  - Click vào address bar (dòng đường trên)
-  - Gõ: cmd  rồi nhấn Enter
-  - Trong cửa sổ CMD vừa mở, gõ:
-      pip install -r requirements.txt
-  - Chờ xong (tải flask, google-genai, ...)
+CÁCH CHẠY:
+  1. Giải nén file zip vào thư mục bất kỳ
+  2. Double-click file: Start.bat
+  3. Start.bat sẽ tự:
+     - Kiểm tra Python có cài không
+     - Tự cài dependencies nếu chưa có (flask, google-genai, ...)
+     - Khởi động server
+     - Mở browser tại http://localhost:5000
 
-Bước 3: Chạy ứng dụng
-  - Double-click file: Start.bat
-  - Browser sẽ tự mở tại http://localhost:5000
-
-Bước 4: Sử dụng
+SỬ DỤNG:
   1. Dán Gemini API key (lấy tại: https://aistudio.google.com/apikey)
   2. (Tuỳ chọn) Gõ yêu cầu xử lý vào ô "Yêu cầu xử lý"
-  3. Upload file video (MP4, MKV, MOV...)
+     VD: "Viết như đang review phim, giọng văn hài hước"
+  3. Upload file video (MP4, MKV, MOV, AVI, WEBM)
   4. Upload file SRT (phụ đề)
   5. Click "Phân tích Video"
-  6. Chờ xử lý (video càng lâu thì càng lâu)
+  6. Chờ xử lý (video càng dài càng lâu - 1h video ~ 2-5 phút)
   7. Click "Xem kết quả" khi xong
   8. Tải file SRT mới về
 
 LƯU Ý:
-  - Máy phải kết nối internet được với Gemini API (không bị proxy chặn)
-  - Video free tier: tối đa 2GB
+  - Máy phải kết nối internet được với Gemini API (không bị proxy/firewall chặn)
+  - Nếu báo "cannot reach this page": 
+    * Kiểm tra Python có cài không (mở cmd, gõ "python --version")
+    * Kiểm tra có tick "Add Python to PATH" không
+    * Chạy Start.bat và đọc thông báo lỗi trên cửa sổ CMD
+  - Video free tier: tối đa 2GB (paid tier: 20GB)
   - Video dài nhất xử lý được: ~3 giờ (low resolution)
   - API key KHÔNG được lưu, nhập lại mỗi lần chạy
+  - Kết quả được lưu trong thư mục results/ và database instance/jobs.db

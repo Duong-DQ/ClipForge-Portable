@@ -43,13 +43,13 @@ def run_job(job_id: str, api_key: str, custom_prompt: str = ""):
             db.session.commit()
 
             mime_type = get_mime_type(job.video_filename)
-            video_uri = gemini_client.upload_video_to_gemini(video_path, mime_type, api_key)
+            video_file = gemini_client.upload_video_to_gemini(video_path, mime_type, api_key)
 
             # Step 2: Generate rewritten SRT
             job.status = "processing"
             db.session.commit()
 
-            rewritten_srt = gemini_client.generate_rewritten_srt(video_uri, job.srt_content, api_key, custom_prompt)
+            rewritten_srt = gemini_client.generate_rewritten_srt(video_file, job.srt_content, api_key, custom_prompt)
 
             # Step 3: Save result
             result_path = os.path.join(RESULTS_DIR, f"{job_id}.srt")
