@@ -722,6 +722,169 @@ def _groups_from_cuts(cuts: List[int], n: int) -> List[List[int]]:
 
 
 # --------------------------------------------------------------------------- #
+# Viral selective mode (LLM picks + ranks the top-N standalone moments)
+# --------------------------------------------------------------------------- #
+def _validate_viral_clips(
+    raw: object, segments: List[TranscriptSegment], config: PipelineConfig
+) -> "list[dict]":
+    """Coerce + validate the LLM's viral-clip selection into a clean list.
+
+    ``raw`` is the parsed ``"clips"`` array; each entry is a dict with
+    ``start``/``end`` (0-based segment indices, inclusive), ``score`` (0-100) and
+    an optional ``hook``. Returns a list of
+    ``{"start": int, "end": int, "score": float, "hook": str}`` dicts that are:
+
+      * clamped to valid segment ranges (``0 <= start <= end < len(segments)``),
+      * clamped so each clip's wall-clock duration <= ``config.max_topic_duration``
+        (``end`` is shrunk when needed),
+      * de-duplicated so no two selected moments overlap (higher score wins),
+      * sorted by score descending (most viral first),
+      * capped at ``config.max_clips``.
+
+    Pure and network-free so it can be unit-tested. Returns ``[]`` on any
+    structural failure (mirrors the never-raise style of the LLM helpers).
+    """
+    if not segments or not isinstance(raw, list):
+        return []
+    n = len(segments)
+    max_dur = float(config.max_topic_duration)
+    candidates: "list[dict]" = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = int(item.get("start"))
+            end = int(item.get("end"))
+        except (TypeError, ValueError):
+            continue
+        if start < 0 or end < start or end >= n:
+            continue
+        # Shrink ``end`` so the clip duration never exceeds the hard max.
+        while end > start and (segments[end].end - segments[start].start) > max_dur:
+            end -= 1
+        if end < start:
+            continue
+        try:
+            score = float(item.get("score", 50.0))
+        except (TypeError, ValueError):
+            score = 50.0
+        score = max(0.0, min(100.0, score))
+        hook = str(item.get("hook", "") or "").strip()[:80]
+        candidates.append({"start": start, "end": end, "score": score, "hook": hook})
+
+    # Most viral first.
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+
+    # Drop overlapping selections (keep the higher-score one, which sorts first).
+    accepted: "list[dict]" = []
+    for cand in candidates:
+        if any(cand["start"] <= a["end"] and cand["end"] >= a["start"] for a in accepted):
+            continue
+        accepted.append(cand)
+
+    max_clips = int(getattr(config, "max_clips", 5) or 5)
+    if max_clips > 0:
+        accepted = accepted[:max_clips]
+    return accepted
+
+
+def _build_viral_topics(
+    clips: "list[dict]", segments: List[TranscriptSegment]
+) -> List[Topic]:
+    """Materialise validated viral clips into :class:`Topic` objects.
+
+    ``clips`` is already sorted by score descending (most viral first), so the
+    resulting topics carry ``index`` ``0..N-1`` in virality order (topic 0 = the
+    most viral clip). Each clip is a contiguous segment range; different clips
+    may be separated by gaps (skipped content) -- that is the point of the
+    selector, so no merge/split passes are applied here.
+    """
+    topics: List[Topic] = []
+    for rank, clip in enumerate(clips):
+        members = [segments[i] for i in range(clip["start"], clip["end"] + 1)]
+        if not members:
+            continue
+        topics.append(
+            Topic(
+                index=rank,
+                start=members[0].start,
+                end=members[-1].end,
+                segments=members,
+                score=clip["score"],
+                hook=clip["hook"],
+            )
+        )
+    return topics
+
+
+def _llm_viral_clips(
+    segments: List[TranscriptSegment],
+    config: PipelineConfig,
+    source_video: "Optional[str]" = None,
+) -> "list[dict]":
+    """Ask the LLM to SELECT the top-N most engaging standalone moments.
+
+    Unlike :func:`_llm_cut_points` (which partitions the whole transcript into
+    contiguous clips), this sends the transcript to the model and asks it to pick
+    ONLY the best self-contained moments -- a selective, non-contiguous ranking
+    of short-form clips, each with a 0-100 virality score and a hook line.
+    Returns the validated clip list from :func:`_validate_viral_clips`, or
+    ``[]`` on any failure. Never raises.
+    """
+    n = len(segments)
+    if n == 0:
+        return []
+
+    lines: "list[str]" = []
+    for seg in segments:
+        text = (seg.text or "").replace("\t", " ").replace("\n", " ").strip()
+        lines.append(f"{seg.index}\t{seg.start:.2f}-{seg.end:.2f}\t{text}")
+    transcript = "\n".join(lines)
+
+    max_clips = int(getattr(config, "max_clips", 5) or 5)
+    min_s = int(getattr(config, "min_topic_duration", 20) or 20)
+    max_s = int(getattr(config, "max_topic_duration", 300) or 300)
+
+    signals_text, _seed = _format_signals(source_video)
+    signals_section = ""
+    if signals_text:
+        signals_section = (
+            "\nAUDIO/VISUAL SIGNALS (from ffmpeg analysis of the source video):\n"
+            + signals_text + "\n"
+        )
+
+    system = (
+        "You select the most engaging standalone short-form moments from a video "
+        "transcript and return strict JSON only."
+    )
+    user = (
+        "From the timed transcript below, SELECT the "
+        + str(max_clips) + " MOST ENGAGING, self-contained moments that would "
+        "work as standalone short-form clips (roughly "
+        + str(min_s) + "-" + str(max_s) + " seconds each).\n"
+        "Rules:\n"
+        "  - DO NOT cover the whole video. Pick ONLY the best moments; skip filler.\n"
+        "  - Each moment must be a complete standalone unit (hook -> body -> payoff) "
+        "understandable on its own, without the rest of the video.\n"
+        "  - Use segment indices: 'start' = 0-based index of the FIRST segment, "
+        "'end' = 0-based index of the LAST segment of the moment (start <= end).\n"
+        "  - 'score' = 0-100, how viral/engaging it is as a standalone clip.\n"
+        "  - 'hook' = a short punchy opening line/caption phrase (max ~10 words).\n"
+        "  - Sort 'clips' by score, best first.\n"
+        + signals_section
+        + "Return STRICT JSON of the form: "
+        '{"clips": [{"start": i, "end": j, "score": 0-100, "hook": "..."}, ...]} '
+        "and nothing else.\n\n"
+        "Transcript:\n" + transcript
+    )
+
+    obj = chat_json(config, system, user, temperature=0.0, max_tokens=800)
+    if not isinstance(obj, dict):
+        return []
+    return _validate_viral_clips(obj.get("clips"), segments, config)
+
+
+# --------------------------------------------------------------------------- #
 # Public API
 # --------------------------------------------------------------------------- #
 def _attach_highlights(
@@ -794,6 +957,30 @@ def segment_topics(
     """
     if not segments:
         raise SegmentationError("Cannot segment an empty transcript (no segments).")
+
+    # Viral selective mode: the LLM picks the top-N most engaging self-contained
+    # moments (non-contiguous, may skip content) and ranks them by a 0-100 score.
+    # This is a SELECTOR, not a partitioner, so unlike the paths below it does not
+    # cover 100% of the transcript. When the LLM is unavailable or returns
+    # nothing, fall back to the hook-based ``retention`` partition.
+    if getattr(config, "cut_strategy", "topic") == "viral":
+        if is_configured(config):
+            clips = _llm_viral_clips(segments, config, source_video)
+            if clips:
+                topics = _build_viral_topics(clips, segments)
+                print(
+                    "[segmentation] viral mode: selected %d clip(s) (ranked by score)"
+                    % len(topics)
+                )
+                return topics
+        print(
+            "[segmentation] viral mode needs the LLM (key+url); "
+            "falling back to 'retention' hook mode"
+        )
+        groups = _group_retention(segments, config)
+        groups = _enforce_min(groups, segments, config)
+        groups = _enforce_max(groups, segments, config)
+        return _build_topics(groups, segments)
 
     # Opt-in: when the LLM is configured, ask it for content-driven cut points.
     # Any failure (LLM disabled, no key, call failed, malformed response) falls
@@ -1030,6 +1217,55 @@ def _test_llm_helpers() -> None:
     print("PASS")
 
 
+def _test_viral_helpers() -> None:
+    """Exercise the viral-mode pure helpers (no network, no key)."""
+    # 12 segments, 1s each, contiguous from 0s.
+    segments = [
+        TranscriptSegment(index=i, start=float(i), end=float(i) + 1.0, text=f"line {i}")
+        for i in range(12)
+    ]
+    config = PipelineConfig(
+        cut_strategy="viral", max_clips=3,
+        min_topic_duration=1.0, max_topic_duration=5.0,
+    )
+    raw = [
+        {"start": 0, "end": 9, "score": 80, "hook": "A"},   # 10s -> clamped to end 4 (5s)
+        {"start": 1, "end": 3, "score": 95, "hook": "B"},   # overlaps clamped A; B wins (95>80)
+        {"start": 6, "end": 8, "score": 70, "hook": "C"},
+        {"start": 10, "end": 11, "score": 60, "hook": "D"},
+        "garbage",                                           # dropped (not a dict)
+        {"start": 50, "end": 60, "score": 99},               # dropped (out of range)
+    ]
+    clips = _validate_viral_clips(raw, segments, config)
+    # A is dropped (overlaps higher-score B); result sorted by score desc, capped at 3.
+    assert [c["score"] for c in clips] == [95.0, 70.0, 60.0], clips
+    assert (clips[0]["start"], clips[0]["end"]) == (1, 3), clips
+    assert (clips[1]["start"], clips[1]["end"]) == (6, 8), clips
+    assert (clips[2]["start"], clips[2]["end"]) == (10, 11), clips
+    # no two selected clips may overlap
+    for x in range(len(clips)):
+        for y in range(x + 1, len(clips)):
+            assert not (
+                clips[x]["start"] <= clips[y]["end"]
+                and clips[x]["end"] >= clips[y]["start"]
+            ), "overlap"
+    # build topics: virality-ordered indices, contiguous members, gaps allowed.
+    topics = _build_viral_topics(clips, segments)
+    assert len(topics) == 3, topics
+    assert topics[0].index == 0 and topics[0].score == 95.0, topics
+    assert topics[0].start == 1.0 and topics[0].end == 4.0, topics
+    assert topics[0].segments[0].index == 1 and topics[0].segments[-1].index == 3, topics
+    # gap between topic0 (segs 1..3) and topic1 (segs 6..8) is allowed
+    assert topics[1].start == 6.0, topics
+    # structural failures -> []
+    assert _validate_viral_clips(None, segments, config) == []
+    assert _validate_viral_clips([], segments, config) == []
+    assert _validate_viral_clips("not a list", segments, config) == []
+
+    print("PASS")
+
+
 if __name__ == "__main__":
     _self_test()
     _test_llm_helpers()
+    _test_viral_helpers()

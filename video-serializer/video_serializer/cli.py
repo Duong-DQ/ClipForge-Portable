@@ -56,8 +56,10 @@ def _parse_args(argv: "list[str] | None") -> argparse.Namespace:
 
     parser.add_argument("--mode", choices=["accurate", "fast"], default="accurate",
                         help="Cut mode: 'accurate' re-encodes (precise), 'fast' stream-copies (default: accurate).")
-    parser.add_argument("--strategy", choices=["topic", "retention"], default="topic",
-                        help="Cutting strategy: 'topic' = content similarity (default); 'retention' = ~3-5 min clips ending on questions/cliffhangers.")
+    parser.add_argument("--strategy", choices=["topic", "retention", "viral"], default="topic",
+                        help="Cutting strategy: 'topic' = content similarity (default); 'retention' = ~3-5 min clips ending on questions/cliffhangers; 'viral' = LLM selects the top-N most engaging standalone moments (needs --llm).")
+    parser.add_argument("--max-clips", type=int, default=5,
+                        help="Viral strategy only: max number of clips to select (default: 5).")
 
     from .hooks import topic_options as _topic_options
     _topic_choices = ["none"] + [k for k, _ in _topic_options()]
@@ -135,6 +137,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
         use_embeddings=args.use_embeddings,
         cut_mode=args.mode,
         cut_strategy=args.strategy,
+        max_clips=max(1, args.max_clips),
         topic=args.topic,
         use_llm=args.llm,
         llm_base_url=base_url,
@@ -164,12 +167,13 @@ def _episode_row(index: int, topic) -> dict:
         "end_timestamp": format_timestamp(topic.end),
         "file": topic.file,
         "summary": topic.summary,
+        "score": round(getattr(topic, "score", 0.0), 1),
     }
 
 
 _METADATA_COLUMNS = [
     "index", "title", "start", "end", "duration", "intro_seconds",
-    "start_timestamp", "end_timestamp", "file", "summary",
+    "start_timestamp", "end_timestamp", "file", "summary", "score",
 ]
 
 
@@ -265,13 +269,13 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"Wrote metadata to {meta_path}")
 
         # 6) Summary table
-        print("\n" + "=" * 78)
-        print(f"{'#':>2}  {'START':>10}  {'END':>10}  {'DUR':>7}  TITLE")
-        print("-" * 78)
+        print("\n" + "=" * 86)
+        print(f"{'#':>2}  {'START':>10}  {'END':>10}  {'DUR':>7}  {'SCORE':>6}  TITLE")
+        print("-" * 86)
         for i, t in enumerate(topics, start=1):
             print(f"{i:>2}  {format_timestamp(t.start):>10}  {format_timestamp(t.end):>10}"
-                  f"  {t.duration:>6.1f}s  {t.title}")
-        print("=" * 78)
+                  f"  {t.duration:>6.1f}s  {getattr(t, 'score', 0.0):>5.0f}  {t.title}")
+        print("=" * 86)
         print(f"\nDone. {len(topics)} episode(s). Output: {output_dir}")
         return 0
 

@@ -47,6 +47,7 @@ from video_serializer.cutter import cut_video, ensure_ffmpeg, FFmpegError  # noq
 from video_serializer.recap import add_recaps  # noqa: E402
 from video_serializer.utils import format_timestamp  # noqa: E402
 from video_serializer.hooks import load_hooks  # noqa: E402
+from video_serializer.gemini_visual import visual_segment, VisualSegmentationError  # noqa: E402
 
 # Windows console is cp1252 by default; make stdout/stderr UTF-8 safe.
 for _stream in (sys.stdout, sys.stderr):
@@ -65,7 +66,8 @@ _PROCESS_LOCK = threading.Lock()
 _LAST_OUTPUT_DIR = {"dir": ""}  # newest /api/process output dir -> served via /clips + /metadata.json
 
 _OPTION_KEYS = ("min_duration", "max_duration", "gap", "similarity",
-                "use_embeddings", "cut_mode", "cut_strategy", "metadata_format")
+                "use_embeddings", "cut_mode", "cut_strategy", "max_clips",
+                "metadata_format")
 
 # Gemini defaults for the opt-in AI mode. Mirror the same values the CLI uses
 # so the two front-ends stay in sync. These are filled in by _build_config when
@@ -107,8 +109,16 @@ def _build_config(payload: dict) -> PipelineConfig:
         cut_mode = "accurate"
 
     strategy = str(payload.get("strategy", "topic")).strip().lower()
-    if strategy not in ("topic", "retention"):
+    if strategy not in ("topic", "retention", "viral"):
         strategy = "topic"
+
+    # Viral mode: how many top moments to select (clamped to >= 1).
+    try:
+        max_clips = int(float(payload.get("max_clips", 5)))
+    except (TypeError, ValueError):
+        max_clips = 5
+    if max_clips < 1:
+        max_clips = 1
 
     meta = str(payload.get("metadata_format", "json")).strip().lower()
     if meta not in ("json", "csv"):
@@ -151,16 +161,20 @@ def _build_config(payload: dict) -> PipelineConfig:
     use_llm = str(payload.get("use_llm", "false")).strip().lower() in (
         "1", "true", "yes", "on",
     )
+    use_visual = str(payload.get("use_visual", "false")).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
     llm_api_key = str(payload.get("llm_api_key", "")).strip()
     llm_base_url = str(payload.get("llm_base_url", "")).strip()
     llm_model = str(payload.get("llm_model", "")).strip()
     llm_proxy = str(payload.get("llm_proxy", "")).strip()
-    if use_llm:
+    llm_custom_prompt = str(payload.get("llm_custom_prompt", "")).strip()
+    if use_llm or use_visual:
         # Fallback to config.json values when form fields are empty
         cfg_file = _load_config_file()
         if not llm_api_key:
             llm_api_key = str(cfg_file.get("llm_api_key", "")).strip()
-        if not llm_base_url:
+        if not llm_base_url and not use_visual:
             llm_base_url = str(cfg_file.get("llm_base_url", "")).strip() or _LLM_DEFAULT_BASE_URL
         if not llm_model:
             llm_model = str(cfg_file.get("llm_model", "")).strip() or _LLM_DEFAULT_MODEL
@@ -175,6 +189,7 @@ def _build_config(payload: dict) -> PipelineConfig:
         use_embeddings=use_embeddings,
         cut_mode=cut_mode,
         cut_strategy=strategy,
+        max_clips=max_clips,
         topic=topic,
         metadata_format=meta,
         add_recaps=add_recaps,
@@ -188,6 +203,8 @@ def _build_config(payload: dict) -> PipelineConfig:
         llm_api_key=llm_api_key,
         llm_model=llm_model,
         llm_proxy=llm_proxy,
+        llm_custom_prompt=llm_custom_prompt,
+        use_visual=use_visual,
     )
 
 
@@ -455,6 +472,7 @@ class Handler(BaseHTTPRequestHandler):
         ]
         topics_out = [
             {"index": t.index + 1, "title": t.title, "summary": t.summary,
+             "score": round(getattr(t, "score", 0.0), 1),
              "start": t.start, "end": t.end, "start_ts": _ts(t.start), "end_ts": _ts(t.end),
              "duration": round(t.end - t.start, 3)}
             for t in topics
@@ -508,15 +526,19 @@ class Handler(BaseHTTPRequestHandler):
                 if not segments:
                     self._send_json({"ok": False, "error": "No usable cues found in the transcript."}, 400)
                     return
-                # Pass video_path so segmentation can run audio/visual signal
-                # analysis (only effective when the LLM path runs; harmless
-                # otherwise).
-                topics = segment_topics(segments, cfg, source_video=video_path)
-                enrich_topics(topics, cfg)
+                # Visual mode: send actual video to Gemini for multimodal segmentation
+                if cfg.use_visual:
+                    topics = visual_segment(video_path, segments, cfg)
+                else:
+                    # Pass video_path so segmentation can run audio/visual signal
+                    # analysis (only effective when the LLM path runs; harmless
+                    # otherwise).
+                    topics = segment_topics(segments, cfg, source_video=video_path)
+                    enrich_topics(topics, cfg)
                 cut_video(video_path, topics, outdir, cfg)
                 if cfg.add_recaps:
                     add_recaps(topics, outdir, cfg, video_path)
-            except (TranscriptParseError, SegmentationError, FFmpegError) as exc:
+            except (TranscriptParseError, SegmentationError, FFmpegError, VisualSegmentationError) as exc:
                 self._send_json({"ok": False, "error": str(exc)}, 500)
                 return
 
@@ -525,6 +547,9 @@ class Handler(BaseHTTPRequestHandler):
                 base = os.path.basename(t.file) if t.file else ""
                 episodes.append({
                     "index": t.index + 1, "title": t.title, "summary": t.summary,
+                    "narration": getattr(t, "narration", ""),
+                    "score": round(getattr(t, "score", 0.0), 1),
+                    "hook": getattr(t, "hook", ""),
                     "start": t.start, "end": t.end, "duration": round(t.end - t.start, 3),
                     "intro_seconds": round(getattr(t, "intro_seconds", 0.0), 3),
                     "start_timestamp": _ts(t.start), "end_timestamp": _ts(t.end),

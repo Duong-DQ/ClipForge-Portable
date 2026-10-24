@@ -565,6 +565,17 @@
             line-height: 1.5;
         }
 
+        .clip-narration {
+            font-size: 0.85rem;
+            color: #a5d6a7;
+            background: rgba(76, 175, 80, 0.08);
+            border-left: 3px solid #4caf50;
+            padding: 8px 12px;
+            margin-bottom: 12px;
+            line-height: 1.5;
+            border-radius: 0 4px 4px 0;
+        }
+
         .clip-download {
             display: inline-flex;
             align-items: center;
@@ -699,7 +710,12 @@
                     <select id="optStrategy">
                         <option value="topic" selected>Theo chủ đề (mặc định)</option>
                         <option value="retention">Giữ chân người xem (kết bằng câu hỏi/mồi nhử)</option>
+                        <option value="viral">Chọn khoảnh khắc viral (chỉ chọn clip hay nhất + chấm điểm, cần AI)</option>
                     </select>
+                    <div style="display:flex; align-items:center; gap:8px; margin-top:6px;">
+                        <label for="optMaxClips" style="margin:0;">Số clip tối đa (chế độ viral)</label>
+                        <input type="number" id="optMaxClips" value="5" min="1" max="20" style="width:70px;">
+                    </div>
                 </div>
                 <div class="option-group">
                     <label for="optTopic">Hook theo chủ đề</label>
@@ -717,13 +733,19 @@
                         <input type="checkbox" id="optUseLlm" style="width: auto;">
                         <label for="optUseLlm" style="margin: 0; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer;">Dùng AI (Gemini): cắt theo nội dung + teaser bám nội dung</label>
                     </div>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px;">
+                        <input type="checkbox" id="optUseVisual" style="width: auto;">
+                        <label for="optUseVisual" style="margin: 0; font-size: 0.85rem; color: var(--text-secondary); cursor: pointer;">🎬 Visual Mode: gửi video cho Gemini (cắt theo hình ảnh + viết narration)</label>
+                    </div>
                     <label for="optLlmKey" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">API key (Gemini)</label>
                     <input type="password" id="optLlmKey" value="" placeholder="dán API key Gemini vào đây" autocomplete="off" style="margin-bottom: 10px;">
                     <label for="optLlmBaseUrl" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Base URL (nâng cao)</label>
                     <input type="text" id="optLlmBaseUrl" value="https://generativelanguage.googleapis.com/v1beta/openai" style="margin-bottom: 10px;">
                     <label for="optLlmModel" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Model (nâng cao)</label>
                     <input type="text" id="optLlmModel" value="gemini-3.8-flash" style="margin-bottom: 10px;">
-                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Cần mạng ra ngoài. Nếu gọi API thất bại sẽ tự chuyển về offline. Key không được lưu.</div>
+                    <label for="optLlmPrompt" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 6px;">Yêu cầu xử lý (tuỳ chọn)</label>
+                    <textarea id="optLlmPrompt" rows="3" placeholder="VD: ưu tiên cắt cảnh hành động, tiêu đề phải gây cấn, tóm tắt bằng tiếng Việt..." style="margin-bottom: 10px; resize: vertical; min-height: 60px;"></textarea>
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 6px;">Cần mạng ra ngoài. Nếu gọi API thất bại sẽ tự chuyển về offline. Key không được lưu. Yêu cầu xử lý sẽ được thêm vào mọi lệnh gửi Gemini.</div>
                 </div>
                 <div class="option-group">
                     <label style="font-weight: 600; color: var(--text-primary); margin-bottom: 10px;">Nhắc lại tập trước</label>
@@ -858,15 +880,18 @@
                 cut_mode: document.getElementById('cutMode').value,
                 use_embeddings: document.getElementById('useEmbeddings').value,
                 strategy: document.getElementById('optStrategy').value,
+                max_clips: parseInt(document.getElementById('optMaxClips').value) || 5,
                 topic: document.getElementById('optTopic').value,
                 add_recaps: document.getElementById('optAddRecaps').checked ? 'true' : 'false',
                 recap_duration: parseFloat(document.getElementById('optRecapDuration').value) || 4,
                 recap_lang: document.getElementById('optRecapLang').value,
                 recap_voice: document.getElementById('optRecapVoice').value,
                 use_llm: document.getElementById('optUseLlm').checked ? 'true' : 'false',
+                use_visual: document.getElementById('optUseVisual').checked ? 'true' : 'false',
                 llm_api_key: document.getElementById('optLlmKey').value || '',
                 llm_base_url: document.getElementById('optLlmBaseUrl').value || '',
-                llm_model: document.getElementById('optLlmModel').value || ''
+                llm_model: document.getElementById('optLlmModel').value || '',
+                llm_custom_prompt: document.getElementById('optLlmPrompt').value || ''
             };
         }
 
@@ -880,6 +905,7 @@
             params.append('cut_mode', options.cut_mode);
             params.append('use_embeddings', options.use_embeddings);
             params.append('strategy', options.strategy);
+            params.append('max_clips', options.max_clips);
             return params.toString();
         }
 
@@ -1077,6 +1103,9 @@
                 if (episode.summary) {
                     html += '<div class="clip-summary">' + escapeHtml(episode.summary) + '</div>';
                 }
+                if (episode.narration) {
+                    html += '<div class="clip-narration">🎙️ ' + escapeHtml(episode.narration) + '</div>';
+                }
                 html += '<a href="' + episode.download + '" class="clip-download" download>⬇️ Tải clip</a>';
                 html += '</div>';
                 html += '</div>';
@@ -1104,6 +1133,7 @@
                 cut_mode: options.cut_mode,
                 use_embeddings: options.use_embeddings,
                 strategy: options.strategy,
+                max_clips: options.max_clips,
                 topic: options.topic,
                 metadata_format: 'json',
                 add_recaps: options.add_recaps,
@@ -1111,9 +1141,11 @@
                 recap_lang: options.recap_lang,
                 recap_voice: options.recap_voice,
                 use_llm: options.use_llm,
+                use_visual: options.use_visual,
                 llm_api_key: options.llm_api_key,
                 llm_base_url: options.llm_base_url,
-                llm_model: options.llm_model
+                llm_model: options.llm_model,
+                llm_custom_prompt: options.llm_custom_prompt
             };
             
             // Optional output_dir
