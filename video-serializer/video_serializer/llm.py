@@ -12,6 +12,8 @@ Design constraints
   to their offline behaviour without try/except.
 * Never log the API key. Errors mask the key (``first6...`` or ``***``).
 * Default model is ``gemini-3.8-flash`` when ``config.llm_model`` is empty.
+* ``chat`` requests ``stream: true`` and re-assembles the streamed chunks, so
+  tokens keep an idle-timeout proxy connection alive for slow generations.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -91,16 +94,24 @@ def _short_reason(exc: BaseException) -> str:
 
 
 def _build_request(
-    config, system: str, user: str, temperature: float, max_tokens: int
+    config, system: str, user: str, temperature: float, max_tokens: int,
+    stream: bool = False,
 ) -> urllib.request.Request:
     """Assemble the urllib request: URL, body, headers (key masked on errors)."""
     base = (getattr(config, "llm_base_url", "") or "").strip().rstrip("/")
     url = base + "/chat/completions"
     model = (getattr(config, "llm_model", "") or "").strip() or _DEFAULT_MODEL
+
+    # Append user's custom prompt instruction if provided
+    custom_prompt = (getattr(config, "llm_custom_prompt", "") or "").strip()
+    if custom_prompt:
+        user = user + "\n\nADDITIONAL INSTRUCTION FROM USER: " + custom_prompt
+
     body = {
         "model": model,
         "temperature": float(temperature),
         "max_tokens": int(max_tokens),
+        "stream": bool(stream),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
@@ -115,36 +126,113 @@ def _build_request(
     return urllib.request.Request(url, data=data, headers=headers, method="POST")
 
 
+# Backoff delays (seconds) between retry attempts for transient failures.
+_RETRY_BACKOFF = (4.0, 8.0)
+
+
+def _sleep_before_retry(attempt: int, masked: str) -> None:
+    """Log and sleep before the next retry attempt (``attempt`` is 1-based)."""
+    delay = _RETRY_BACKOFF[attempt - 1]
+    print(f"[llm] transient failure, retrying in {delay:.0f}s (key={masked})",
+          file=sys.stderr)
+    time.sleep(delay)
+
+
+def _read_sse_text(response) -> str:
+    """Accumulate the assistant text from an OpenAI-compatible SSE stream.
+
+    Reads the stream line-by-line and concatenates every
+    ``choices[0].delta.content`` chunk until the ``data: [DONE]`` marker.
+    Unknown, blank and keep-alive lines are skipped so the reader tolerates
+    providers that interleave comments. Returns the full text (possibly empty).
+    """
+    chunks: list[str] = []
+    for raw_line in response:
+        if not raw_line:
+            continue
+        line = raw_line.decode("utf-8", "replace").strip()
+        if not line.startswith("data:"):
+            continue  # skip event:/comment/blank lines
+        payload = line[len("data:"):].strip()
+        if not payload:
+            continue
+        if payload == "[DONE]":
+            break
+        try:
+            obj = json.loads(payload)
+        except (ValueError, TypeError):
+            continue  # tolerate malformed/partial payloads
+        try:
+            delta = obj["choices"][0].get("delta") or {}
+            piece = delta.get("content")
+        except (KeyError, IndexError, TypeError, AttributeError):
+            continue
+        if isinstance(piece, str):
+            chunks.append(piece)
+    return "".join(chunks).strip()
+
+
 def chat(config, system: str, user: str, temperature: float = 0.0,
          max_tokens: int = 500, timeout: int = 60) -> "str | None":
-    """POST a chat-completions request and return the assistant text.
+    """POST a streaming chat-completions request and return the full text.
 
-    On any failure (URLError, HTTPError, timeout, JSON decode, missing fields,
-    non-string content) emit ONE stderr line ``[llm] chat failed: <short>``
-    with the API key masked and return ``None``. Never raises.
+    The request uses ``stream: true`` so tokens arrive continuously, keeping an
+    idle-timeout proxy connection alive for slow generations that would
+    otherwise be dropped mid-generation. Streamed chunks are re-assembled into
+    the single text string callers expect.
+
+    Retries transient failures with a short backoff:
+      * 5xx server responses (e.g. Gemini's ``503 high demand``), and
+      * connection-level errors (``RemoteDisconnected``, timeout, reset).
+    Client errors (4xx: bad model / key) are NOT retried. On any final failure
+    emit ONE stderr line ``[llm] chat failed: <short>`` with the API key masked
+    and return ``None``. Never raises.
     """
     api_key = (getattr(config, "llm_api_key", "") or "").strip()
     masked = _mask_key(api_key)
-    try:
-        request = _build_request(config, system, user, temperature, max_tokens)
-        opener = _build_opener(config)
-        with opener.open(request, timeout=timeout) as response:
-            payload = response.read().decode("utf-8", "replace")
-        parsed = json.loads(payload)
-        content = parsed["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
+    max_attempts = 1 + len(_RETRY_BACKOFF)
+    for attempt in range(1, max_attempts + 1):
+        try:
+            request = _build_request(config, system, user, temperature, max_tokens,
+                                     stream=True)
+            opener = _build_opener(config)
+            with opener.open(request, timeout=timeout) as response:
+                text = _read_sse_text(response)
+            if not text:
+                print(
+                    f"[llm] chat failed: empty stream (key={masked})",
+                    file=sys.stderr,
+                )
+                return None
+            return text
+        except urllib.error.HTTPError as exc:
+            if 500 <= exc.code <= 599 and attempt < max_attempts:
+                _sleep_before_retry(attempt, masked)
+                continue
             print(
-                f"[llm] chat failed: non-string content (key={masked})",
+                f"[llm] chat failed: HTTP {exc.code} (key={masked}) "
+                f"after {attempt} attempt(s)",
                 file=sys.stderr,
             )
             return None
-        return content.strip()
-    except Exception as exc:  # noqa: BLE001 - deliberate, must never raise
-        print(
-            f"[llm] chat failed: {_short_reason(exc)} (key={masked})",
-            file=sys.stderr,
-        )
-        return None
+        except OSError as exc:
+            # URLError / RemoteDisconnected / timeout / connection reset.
+            if attempt < max_attempts:
+                _sleep_before_retry(attempt, masked)
+                continue
+            print(
+                f"[llm] chat failed: {_short_reason(exc)} (key={masked}) "
+                f"after {attempt} attempt(s)",
+                file=sys.stderr,
+            )
+            return None
+        except Exception as exc:  # noqa: BLE001 - deliberate, must never raise
+            print(
+                f"[llm] chat failed: {_short_reason(exc)} (key={masked})",
+                file=sys.stderr,
+            )
+            return None
+    return None
 
 
 # A loose JSON object extractor: find the first balanced {...} run in the text
